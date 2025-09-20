@@ -4,6 +4,6 @@ updates:
     directory: "/"
     target-branch: "dev"
     allow:
-      - dependency-type: "Languages"
+      - dependency-name: "Languages"
     schedule:
       interval: "daily"
