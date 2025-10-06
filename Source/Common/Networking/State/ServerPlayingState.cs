@@ -36,8 +36,9 @@ namespace Multiplayer.Common
             if (type == TracesPacket.Response && Player.IsHost)
             {
                 var playerId = data.ReadInt32();
-                var traces = data.ReadPrefixedBytes();
-                Server.GetPlayer(playerId)?.SendPacket(Packets.Server_Traces, new object[] { TracesPacket.Transfer, traces });
+                var isTraces = data.ReadBool();
+                var traces = data.ReadPrefixedBytes(); // if !isTraces, this is actually metadata
+                Server.GetPlayer(playerId)?.SendPacket(Packets.Server_Traces, [TracesPacket.Transfer, isTraces, traces]);
             }
         }
 

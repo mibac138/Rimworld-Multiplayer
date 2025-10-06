@@ -1,9 +1,12 @@
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 using Ionic.Zlib;
+using LudeonTK;
+using Multiplayer.Client.Desyncs;
 using Multiplayer.Common;
 using RimWorld;
 using RimWorld.Planet;
-using System;
-using System.Collections.Generic;
 using UnityEngine;
 using Verse;
 
@@ -228,6 +231,8 @@ namespace Multiplayer.Client
             TickPatch.frozenAt = frozenAt;
         }
 
+        [TweakValue("Multiplayer")] private static bool sendMetadataOnDesync = true;
+
         [PacketHandler(Packets.Server_Traces, allowFragmented: true)]
         public void HandleTraces(ByteReader data)
         {
@@ -242,12 +247,35 @@ namespace Multiplayer.Client
                 var info = Multiplayer.game.sync.knownClientOpinions.FirstOrDefault(b => b.startTick == tick);
                 var response = info?.GetFormattedStackTracesForRange(diffAt);
 
-                connection.Send(Packets.Client_Traces, TracesPacket.Response, playerId, GZipStream.CompressString(response));
+                connection.Send(Packets.Client_Traces, TracesPacket.Response, playerId, /*isTraces*/ true, GZipStream.CompressString(response));
+                MaybeSendMetadata(playerId);
             }
             else if (type == TracesPacket.Transfer)
             {
-                var traces = data.ReadPrefixedBytes();
-                Multiplayer.session.desyncTracesFromHost = GZipStream.UncompressString(traces);
+                var isTraces = data.ReadBool();
+                var compressed = data.ReadPrefixedBytes();
+                var text = GZipStream.UncompressString(compressed);
+                if (isTraces)
+                    Multiplayer.session.desyncTracesFromHost = text;
+                else
+                    Multiplayer.session.metadataFromHost = text;
+            }
+        }
+
+        private void MaybeSendMetadata(int playerId)
+        {
+            if (!sendMetadataOnDesync)
+            {
+                connection.SendFragmented(Packets.Client_Traces, TracesPacket.Response, playerId,
+                    /*isTraces*/ false, GZipStream.CompressString("Host has disabled this setting"));
+            } else {
+                Task.Run(MetadataGenerator.Generate).ContinueWith(task =>
+                {
+                    if (!task.IsCompletedSuccessfully) return;
+                    var metadata = task.Result;
+                    connection.SendFragmented(Packets.Client_Traces, TracesPacket.Response, playerId,
+                        /*isTraces*/ false, GZipStream.CompressString(metadata));
+                });
             }
         }
 

@@ -43,6 +43,7 @@ public class SaveableDesyncInfo(
             if (extraLogs != null) zip.AddEntry("local_logs.txt", extraLogs);
 
             zip.AddEntry("local_metadata.txt", metadata.Result);
+            zip.AddEntry("host_metadata.txt", GetHostMetadata() ?? "No host metadata");
         }
         catch (Exception e)
         {
@@ -50,6 +51,14 @@ public class SaveableDesyncInfo(
         }
 
         Log.Message($"Desync info writing took {watch.ElapsedMilliseconds}");
+    }
+
+    private string GetHostMetadata()
+    {
+        var hostMetadata = Multiplayer.session.metadataFromHost;
+        if (metadata.Result.Equals(hostMetadata))
+            hostMetadata = "Note: metadata is equal between local and remote";
+        return hostMetadata;
     }
 
     private string GetLocalTraces()

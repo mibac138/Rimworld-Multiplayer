@@ -35,6 +35,7 @@ namespace Multiplayer.Client
         public int autosaveCounter;
         public float? lastSaveAt;
         public string desyncTracesFromHost;
+        public string metadataFromHost;
         public List<ClientSyncOpinion> initialOpinions = new();
 
         public bool replay;

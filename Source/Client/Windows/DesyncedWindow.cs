@@ -90,7 +90,10 @@ namespace Multiplayer.Client
         {
             const float maxWait = 5f;
 
-            var shouldWrite = Multiplayer.session?.desyncTracesFromHost != null || Time.realtimeSinceStartup - openedAt > maxWait;
+            var receivedInfoFromHost =
+                Multiplayer.session?.desyncTracesFromHost != null &&
+                Multiplayer.session?.metadataFromHost != null;
+            var shouldWrite = receivedInfoFromHost || Time.realtimeSinceStartup - openedAt > maxWait;
             if (!infoWritten && shouldWrite && desyncInfo.ReadyToSave)
             {
                 desyncInfo.Save();
