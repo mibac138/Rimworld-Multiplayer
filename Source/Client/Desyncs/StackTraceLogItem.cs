@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using LudeonTK;
 using Multiplayer.Client.Desyncs;
 using Verse;
 
@@ -52,17 +53,34 @@ namespace Multiplayer.Client
 
         private static Dictionary<long, string> methodNameCache = new();
 
+        // Enabled to help debug an issue where a desync happens because the hash differs, despite the stack trace being
+        // the same.
+        [TweakValue("Multiplayer")] private static bool verboseStackTraces = true;
+        private static bool lastVerboseStackTraces = verboseStackTraces;
+
         public override string StackTraceString
         {
             get
             {
+                if (verboseStackTraces != lastVerboseStackTraces)
+                {
+                    lastVerboseStackTraces = verboseStackTraces;
+                    methodNameCache.Clear();
+                }
+
                 var builder = new StringBuilder();
                 for (int i = 0; i < depth; i++)
                 {
                     var addr = raw[i];
 
                     if (!methodNameCache.TryGetValue(addr, out string method))
-                        methodNameCache[addr] = method = Native.MethodNameFromAddr(raw[i], false);
+                    {
+                        var resolution = verboseStackTraces ? MethodResolution.UseBoth : MethodResolution.PreferPatch;
+                        method = Native.MethodNameFromAddr(raw[i], resolution);
+                        if (verboseStackTraces)
+                            method += $" [H: {DeferredStackTracingImpl.hashTable.GetAddrInfoCopy(addr)?.addr}]";
+                        methodNameCache[addr] = method;
+                    }
 
                     builder.AppendLine(method != null ? SyncCoordinator.MethodNameWithIL(method) : "Null");
                 }

@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using HarmonyLib;
+using Multiplayer.Common;
 
 namespace Multiplayer.Client
 {
@@ -74,7 +75,7 @@ namespace Multiplayer.Client
             }
         }
 
-        public static string? MethodNameFromAddr(long addr, bool harmonyOriginals)
+        public static string? MethodNameFromAddr(long addr, MethodResolution resolution)
         {
             var domain = DomainPtr;
             var ji = mono_jit_info_table_find(domain, (IntPtr)addr);
@@ -83,20 +84,24 @@ namespace Multiplayer.Client
 
             var ptrToPrint = mono_jit_info_get_method(ji);
             var codeStart = (long)mono_jit_info_get_code_start(ji);
+            var harmonyPtrToPrint = IntPtr.Zero;
 
-            if (harmonyOriginals && HarmonyOriginalGetter != null)
+            if (resolution != MethodResolution.PreferOriginal && HarmonyOriginalGetter != null)
             {
                 var original = HarmonyOriginalGetter(codeStart);
                 if (original != null)
-                    ptrToPrint = original.MethodHandle.Value;
+                    harmonyPtrToPrint = original.MethodHandle.Value;
+                if (resolution == MethodResolution.PreferPatch && harmonyPtrToPrint != IntPtr.Zero)
+                    ptrToPrint = harmonyPtrToPrint;
             }
 
             var name = mono_debug_print_stack_frame(ptrToPrint, -1, domain);
-
-            return string.IsNullOrEmpty(name) ? null : name;
+            if (resolution == MethodResolution.UseBoth && harmonyPtrToPrint != IntPtr.Zero)
+                name += "\n   OG: " + mono_debug_print_stack_frame(harmonyPtrToPrint, -1, domain).RemovePrefix("at ");
+            return name;
         }
 
-        public static string? MethodNameNormalizedFromAddr(long addr, bool harmonyOriginals)
+        public static string? MethodNameNormalizedFromAddr(long addr, MethodResolution harmonyOriginals)
         {
             var name = MethodNameFromAddr(addr, harmonyOriginals);
 
@@ -254,4 +259,9 @@ namespace Multiplayer.Client
             }
         }
     }*/
+}
+
+public enum MethodResolution : byte
+{
+    PreferOriginal, PreferPatch, UseBoth
 }

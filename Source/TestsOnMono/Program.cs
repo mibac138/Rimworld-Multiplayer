@@ -72,7 +72,7 @@ static class Program
             Console.WriteLine(hash);
 
             foreach (long l in trace)
-                Console.WriteLine(Native.MethodNameFromAddr(l, false));
+                Console.WriteLine(Native.MethodNameFromAddr(l, MethodResolution.PreferOriginal));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.NoInlining)]

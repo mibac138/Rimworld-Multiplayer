@@ -23,6 +23,22 @@ public struct AddrTable()
 
     public ref AddrInfo GetOrCreateAddrInfo(long ret)
     {
+        ref var info = ref GetAddrInfo(ret);
+        // When returning an unpopulated AddrInfo, assume it's going to get populated shortly and consider it used
+        // immediately.
+        if (info.addr == 0 && Entries++ > Size * LoadFactor) ResizeHashtable();
+        return ref info;
+    }
+
+    public AddrInfo? GetAddrInfoCopy(long ret)
+    {
+        ref var info = ref GetAddrInfo(ret);
+        if (info.addr == 0) return null;
+        return info;
+    }
+
+    private ref AddrInfo GetAddrInfo(long ret)
+    {
         int indexmask = Size - 1;
         int index = (int)(HashAddr((ulong)ret) >> shift);
         ref var info = ref hashtable[index];
@@ -36,10 +52,6 @@ public struct AddrTable()
             colls++;
         }
         if (colls > Collisions) Collisions = colls;
-
-        // When returning an unpopulated AddrInfo, assume it's going to get populated shortly and consider it used
-        // immediately.
-        if (info.addr == 0 && Entries++ > Size * LoadFactor) ResizeHashtable();
         return ref info;
     }
 
@@ -179,7 +191,7 @@ public static class DeferredStackTracingImpl
         info.addr = ret;
         info.stackUsage = GetStackUsage(ret);
 
-        var normalizedMethodNameBetweenOS = Native.MethodNameNormalizedFromAddr(ret, true);
+        var normalizedMethodNameBetweenOS = Native.MethodNameNormalizedFromAddr(ret, MethodResolution.PreferPatch);
 
         info.nameHash =
             normalizedMethodNameBetweenOS == null ? 1 :
@@ -223,7 +235,7 @@ public static class DeferredStackTracingImpl
         if (*(byte*)start == 0x55)
             return RbpBased;
 
-        throw new Exception($"Deferred stack tracing: Unknown function header {*start} {Native.MethodNameFromAddr(addr, false)}");
+        throw new Exception($"Deferred stack tracing: Unknown function header {*start} {Native.MethodNameFromAddr(addr, MethodResolution.PreferOriginal)}");
     }
 
     private static unsafe void CheckRbpUsage(uint* at, ref long stackUsage)
