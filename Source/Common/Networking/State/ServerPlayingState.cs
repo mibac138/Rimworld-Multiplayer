@@ -20,14 +20,9 @@ namespace Multiplayer.Common
             Player.ResetTimeVotes();
         }
 
-        [PacketHandler(Packets.Client_Desynced)]
-        public void HandleDesynced(ByteReader data)
-        {
-            var tick = data.ReadInt32();
-            var diffAt = data.ReadInt32();
-
-            Server.playerManager.OnDesync(Player, tick, diffAt);
-        }
+        [TypedPacketHandler]
+        public void HandleDesynced(ClientDesyncedPacket packet) =>
+            Server.playerManager.OnDesync(Player, packet.tick, packet.diffAt);
 
         [PacketHandler(Packets.Client_Traces, allowFragmented: true)]
         public void HandleTraces(ByteReader data)

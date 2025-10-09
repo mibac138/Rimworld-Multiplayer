@@ -129,6 +129,10 @@ public class PacketTest
         ]);
 
         yield return ServerPlayerListPacket.Status(1, PlayerStatus.Playing);
+
+        yield return new ClientDesyncedPacket();
+        yield return new ClientDesyncedPacket(123, 123);
+        yield return new ClientDesyncedPacket(1_000_000, 5092);
     }
 
     [TestCaseSource(nameof(RoundtripPackets))]

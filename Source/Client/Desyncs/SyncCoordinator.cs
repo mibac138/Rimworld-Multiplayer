@@ -1,11 +1,11 @@
-using Multiplayer.Common;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using RimWorld;
-using Verse;
 using Multiplayer.Client.Desyncs;
 using Multiplayer.Client.Util;
+using Multiplayer.Common.Networking.Packet;
+using RimWorld;
+using Verse;
 
 namespace Multiplayer.Client
 {
@@ -126,7 +126,7 @@ namespace Multiplayer.Client
             var remote = !oldOpinion.isLocalClientsOpinion ? oldOpinion : newOpinion;
 
             var diffAt = FindTraceHashesDiffTick(local, remote);
-            Multiplayer.Client.Send(Packets.Client_Desynced, local.startTick, diffAt);
+            Multiplayer.Client.Send(new ClientDesyncedPacket(local.startTick, diffAt));
             Multiplayer.session.desyncTracesFromHost = null;
 
             MpUI.ClearWindowStack();
