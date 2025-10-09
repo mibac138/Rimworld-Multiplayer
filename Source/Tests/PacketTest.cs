@@ -133,6 +133,11 @@ public class PacketTest
         yield return new ClientDesyncedPacket();
         yield return new ClientDesyncedPacket(123, 123);
         yield return new ClientDesyncedPacket(1_000_000, 5092);
+
+        yield return ServerTracesPacket.Request(tick: 123, diffAt: 456, requestingPlayerId: 7);
+        yield return ServerTracesPacket.Transfer([1, 2, 3, 4, 5]);
+
+        yield return ClientTracesPacket.Response(requestingPlayerId: 42, rawTraces: [10, 20, 30, 40]);
     }
 
     [TestCaseSource(nameof(RoundtripPackets))]
