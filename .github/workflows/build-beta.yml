@@ -27,6 +27,7 @@ jobs:
         if: ${{ runner.os == 'macOS' }}
         run: |
           which -a cc
+          cc -v
       - name: Build native
         run: cargo build --release --manifest-path native/Cargo.toml --target-dir Native/
       - name: Cache binaries
