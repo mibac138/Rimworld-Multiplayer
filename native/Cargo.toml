@@ -5,7 +5,7 @@ edition = "2024"
 
 [lib]
 name = "fp"
-crate-type = ["dylib"]
+crate-type = ["cdylib"]
 
 [profile.release]
 panic = "abort"

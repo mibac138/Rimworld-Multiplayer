@@ -24,11 +24,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Build native
-        if: ${{ runner.os != 'macos-latest' }}
         run: cargo build --release --manifest-path native/Cargo.toml --target-dir ./Native/
-      - name: Build native
-        if: ${{ runner.os == 'macos-latest' }}
-        run: cargo build --release --manifest-path native/Cargo.toml --target-dir ./Native/ --target aarch64-apple-darwin
       - name: Cache binaries
         uses: actions/cache@v4
         with:
