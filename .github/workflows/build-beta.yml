@@ -24,7 +24,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Build native
-        run: cargo build --release --manifest-path native/Cargo.toml --target-dir ./Native/
+        run: cargo build --release --manifest-path native/Cargo.toml --target-dir Native/
       - name: Cache binaries
         uses: actions/cache@v4
         with:
