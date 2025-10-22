@@ -15,7 +15,7 @@ static class Program
     {
         Native.mini_parse_debug_option("disable_omit_fp");
         Native.InitLmfPtr(Native.NativeOS.Dummy);
-        Native.EarlyInit(Native.NativeOS.Dummy);
+        Native.EarlyInit(Native.NativeOS.Dummy, null); // TODO
 
         TestClass<int>.Test1<int>();
         TestClass<int>.Test();

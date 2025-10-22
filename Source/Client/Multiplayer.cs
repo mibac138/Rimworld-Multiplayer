@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -90,7 +91,7 @@ namespace Multiplayer.Client
                     RuntimePlatform.OSXEditor => Native.NativeOS.OSX,
                     RuntimePlatform.OSXPlayer => Native.NativeOS.OSX,
                     _ => Native.NativeOS.Windows
-                });
+                }, Path.Combine(modContentPack.RootDir, "AssembliesNative"));
 
             DisableOmitFramePointer();
 

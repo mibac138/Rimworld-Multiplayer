@@ -1,0 +1,14 @@
+[package]
+name = "framepointer_native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "fp"
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
