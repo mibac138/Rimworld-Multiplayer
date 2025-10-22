@@ -12,9 +12,29 @@ on:
       - 'README.md'
 
 jobs:
+  build-native:
+    name: Build native
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix: 
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest, macos-15-intel]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Build native
+        run: cargo build --release --manifest-path Source/Common/Native/Cargo.toml --target-dir ./Native/
+      - name: Cache binaries
+        uses: actions/cache@v2
+        with:
+          path: Native/
+          key: ${{ runner.os }}-${{ runner.arch }}-build-native-${{ github.sha }}
+          
   build:
     name: Build beta
     runs-on: ubuntu-latest
+    needs: build-native
     env:
         GH_TOKEN: ${{ github.token }}
     steps:
@@ -34,11 +54,37 @@ jobs:
     - name: Build Mod
       run: dotnet build ${{ env.SLN_PATH }} --configuration Release --no-restore
 
+    - uses: actions/cache@v2
+      with:
+        path: ./Native-Linux-X64/
+        key: Linux-X64-build-native-${{ github.sha }}
+    - uses: actions/cache@v2
+      with:
+        path: ./Native-Linux-ARM64/
+        key: Linux-ARM64-build-native-${{ github.sha }}
+    - uses: actions/cache@v2
+      with:
+        path: ./Native-Windows-X64/
+        key: Windows-X64-build-native-${{ github.sha }}
+    - uses: actions/cache@v2
+      with:
+        path: ./Native-Windows-ARM64/
+        key: Windows-ARM64-build-native-${{ github.sha }}
+    - uses: actions/cache@v2
+      with:
+        path: ./Native-MacOS-X64/
+        key: macOS-X64-build-native-${{ github.sha }}
+    - uses: actions/cache@v2
+      with:
+        path: ./Native-MacOS-ARM64/
+        key: macOS-ARM64-build-native-${{ github.sha }}
+
     - name: Package files
       run: |
         sed -i "s/<name>\(.*\)<\/name>\$/<name>\1 [Continuous]<\/name>/" About/About.xml
         mkdir -p output/Multiplayer
         mv About/ Assemblies/ AssembliesCustom/ Defs/ Languages/ Textures/ output/Multiplayer
+        mv Native-*/ output/Multiplayer/AssembliesNative
         cd output/
         zip -r ../Multiplayer-beta.zip Multiplayer/
         cd ../
@@ -56,6 +102,6 @@ jobs:
     
     - name: Upload new release
       run: |
-        gh release create --target "${{ github.sha }}" --title "Continuous" --notes-file ".github/workflows/alpha-notes.md" --draft "continuous"
+        gh release create --target $(git branch --show-current) --title "Continuous" --notes-file ".github/workflows/alpha-notes.md" --draft "continuous"
         gh release upload "continuous" Multiplayer-beta.zip
         gh release edit "continuous" --draft=false

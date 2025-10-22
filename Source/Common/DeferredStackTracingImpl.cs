@@ -266,6 +266,7 @@ public static class DeferredStackTracingImpl
 
     static DeferredStackTracingImpl()
     {
+        return;
         // All of this code assumes that the rbp pointer offset stays the same throughout the method invocations.
         // Mono is generally allowed to recompile code, which could cause issues for us, but GetRpb is annotated as
         // NoInline and NoOptimization to heavily discourage any changes and avoid breaking.
@@ -338,6 +339,8 @@ public static class DeferredStackTracingImpl
     [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
     private static unsafe long GetRbp()
     {
+        return Native.get_frame_pointer().ToInt64();
+
         // This variable declaration compiles down to the following IL:
         // ldc.i8 <MagicNumber>
         // stloc.0

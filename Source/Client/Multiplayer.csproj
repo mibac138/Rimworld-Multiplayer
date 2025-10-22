@@ -64,6 +64,22 @@
     <ModOutputPath>..\..\</ModOutputPath>
   </PropertyGroup>
 
+  <Target Name="BuildNative" AfterTargets="Build">
+    <Exec Command="cargo build --manifest-path ../../native/Cargo.toml --release" />
+
+    <!-- Copy the resulting library next to the output binary -->
+    <ItemGroup>
+      <RustLibs Include="../../native/target/release/libfp.dylib"
+                Condition="Exists('../../native/target/release/libfp.dylib')" />
+      <RustLibs Include="../../native/target/release/libfp.so"
+                Condition="Exists('../../native/target/release/libfp.so')" />
+      <RustLibs Include="../../native/target/release/fp.dll"
+                Condition="Exists('../../native/target/release/fp.dll')" />
+    </ItemGroup>
+
+    <Copy SourceFiles="@(RustLibs)" DestinationFolder="$(ModOutputPath)\AssembliesNative\" />
+  </Target>
+
   <Target Name="CopyToRimworld" AfterTargets="Build">
     <Copy SourceFiles="bin\Multiplayer.dll" DestinationFiles="$(ModOutputPath)\AssembliesCustom\Multiplayer.dll" />
     <Copy SourceFiles="bin\Multiplayer.pdb" DestinationFiles="$(ModOutputPath)\AssembliesCustom\Multiplayer.pdb" />

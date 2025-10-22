@@ -1,9 +1,12 @@
 using System;
+using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using HarmonyLib;
+using Multiplayer.Common;
+using Verse;
 
 namespace Multiplayer.Client
 {
@@ -22,21 +25,76 @@ namespace Multiplayer.Client
 
         public static Func<long, MethodBase>? HarmonyOriginalGetter { get; set; }
 
-        public static void EarlyInit(NativeOS os)
+        public static void EarlyInit(NativeOS os, string nativeDir)
         {
             if (os == NativeOS.Linux)
-                TheLinuxWay();
+                TheLinuxWay(nativeDir);
             if (os == NativeOS.OSX)
-                TheOSXWay();
-
+                TheOSXWay(nativeDir);
+            if (os == NativeOS.Windows)
+                TheWindowsWay(nativeDir);
             EarlyInitInternal();
+            Log.Message($"FRAMEPOINTER: {get_frame_pointer()}");
+        }
+
+        static void FpInit(NativeOS os, string nativeDir, string lib, Action<string, string> dllmapInsert)
+        {
+            var archName = RuntimeInformation.ProcessArchitecture switch
+            {
+                Architecture.X64 => "x64",
+                Architecture.Arm64 => "arm64",
+                var arch => throw new Exception($"Unsupported architecture: {arch}")
+            };
+            var osName = os switch
+            {
+                NativeOS.Windows => "win",
+                NativeOS.OSX => "osx",
+                NativeOS.Linux => "linux",
+                _ => throw new ArgumentOutOfRangeException(nameof(os), os, null)
+            };
+            var ext = os switch
+            {
+                NativeOS.Windows => "dll",
+                NativeOS.OSX => "dylib",
+                NativeOS.Linux => "so",
+                _ => throw new ArgumentOutOfRangeException(nameof(os), os, null)
+            };
+            var libName = $"{lib}-{archName}-{osName}.{ext}";
+            var libPath = Path.Combine(nativeDir, libName);
+
+            if (!File.Exists(libPath) && MpVersion.IsDebug)
+            {
+                // The library files are appropriately named during CI. For local development it's fine to use
+                // a simplified file name from a locally compiled build.
+                libName = $"{lib}.{ext}";
+                libPath = Path.Combine(nativeDir, libName);
+            }
+
+            dllmapInsert.Invoke(lib, Path.Combine(nativeDir, libName));
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        static void TheLinuxWay() => mono_dllmap_insert_linux(IntPtr.Zero, MonoWindows, null, MonoLinux, null);
+        static void TheWindowsWay(string nativeDir)
+        {
+            FpInit(NativeOS.Windows, nativeDir, FramePointerLibName, (name, path) =>
+                mono_dllmap_insert_windows(IntPtr.Zero, name, null, path, null));
+        }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        static void TheOSXWay() => mono_dllmap_insert_osx(IntPtr.Zero, MonoWindows, null, MonoOSX, null);
+        static void TheLinuxWay(string nativeDir)
+        {
+            mono_dllmap_insert_linux(IntPtr.Zero, MonoWindows, null, MonoLinux, null);
+            FpInit(NativeOS.Windows, nativeDir, FramePointerLibName, (name, path) =>
+                mono_dllmap_insert_windows(IntPtr.Zero, name, null, path, null));
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        static void TheOSXWay(string nativeDir)
+        {
+            mono_dllmap_insert_osx(IntPtr.Zero, MonoWindows, null, MonoOSX, null);
+            FpInit(NativeOS.Windows, nativeDir, FramePointerLibName, (name, path) =>
+                mono_dllmap_insert_windows(IntPtr.Zero, name, null, path, null));
+        }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static void EarlyInitInternal()
@@ -129,6 +187,11 @@ namespace Multiplayer.Client
         const string MonoLinux = "libmonobdwgc-2.0.so";
         const string MonoOSX = "libmonobdwgc-2.0.dylib";
 
+        private const string FramePointerLibName = "fp";
+
+        [DllImport(MonoWindows, EntryPoint = "mono_dllmap_insert")]
+        private static extern void mono_dllmap_insert_windows(IntPtr assembly, string? dll, string? func, string? tdll, string? tfunc);
+
         [DllImport(MonoLinux, EntryPoint = "mono_dllmap_insert")]
         private static extern void mono_dllmap_insert_linux(IntPtr assembly, string? dll, string? func, string? tdll, string? tfunc);
 
@@ -181,6 +244,9 @@ namespace Multiplayer.Client
         {
             return *((byte*)mono_class_vtable(mono_domain_get(), mono_class_from_mono_type(t.TypeHandle.Value)) + 45) != 0;
         }
+
+        [DllImport(FramePointerLibName)]
+        public static extern IntPtr get_frame_pointer();
     }
 
     /*public static class IcedDisasm
