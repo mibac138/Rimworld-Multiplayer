@@ -26,7 +26,7 @@ jobs:
       - name: Build native
         run: cargo build --release --manifest-path Source/Common/Native/Cargo.toml --target-dir ./Native/
       - name: Cache binaries
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: Native/
           key: ${{ runner.os }}-${{ runner.arch }}-build-native-${{ github.sha }}
@@ -54,27 +54,27 @@ jobs:
     - name: Build Mod
       run: dotnet build ${{ env.SLN_PATH }} --configuration Release --no-restore
 
-    - uses: actions/cache@v2
+    - uses: actions/cache@v4
       with:
         path: ./Native-Linux-X64/
         key: Linux-X64-build-native-${{ github.sha }}
-    - uses: actions/cache@v2
+    - uses: actions/cache@v4
       with:
         path: ./Native-Linux-ARM64/
         key: Linux-ARM64-build-native-${{ github.sha }}
-    - uses: actions/cache@v2
+    - uses: actions/cache@v4
       with:
         path: ./Native-Windows-X64/
         key: Windows-X64-build-native-${{ github.sha }}
-    - uses: actions/cache@v2
+    - uses: actions/cache@v4
       with:
         path: ./Native-Windows-ARM64/
         key: Windows-ARM64-build-native-${{ github.sha }}
-    - uses: actions/cache@v2
+    - uses: actions/cache@v4
       with:
         path: ./Native-MacOS-X64/
         key: macOS-X64-build-native-${{ github.sha }}
-    - uses: actions/cache@v2
+    - uses: actions/cache@v4
       with:
         path: ./Native-MacOS-ARM64/
         key: macOS-ARM64-build-native-${{ github.sha }}
