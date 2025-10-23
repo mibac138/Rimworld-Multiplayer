@@ -83,6 +83,7 @@ namespace Multiplayer.Client
         public static void InitMultiplayer(ModContentPack content)
         {
             modContentPack = content;
+            Log.Message($"Multiplayer version {MpVersion.Version}");
             Native.EarlyInit(
                 Application.platform switch
                 {
