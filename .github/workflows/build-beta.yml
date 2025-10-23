@@ -93,7 +93,8 @@ jobs:
         mkdir -p output/Multiplayer
         mv About/ Assemblies/ AssembliesCustom/ Defs/ Languages/ Textures/ output/Multiplayer
         find . -type d -name "Native*" -exec find {} -type f \;
-        mv Native-*/ output/Multiplayer/AssembliesNative
+        mkdir -p output/Multiplayer/AssembliesNative
+        mv Native-*/*.{dll,so,dylib} output/Multiplayer/AssembliesNative
         cd output/
         zip -r ../Multiplayer-beta.zip Multiplayer/
         cd ../
