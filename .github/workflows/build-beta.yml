@@ -27,7 +27,10 @@ jobs:
       - name: Build native
         run: cargo build --release --manifest-path native/Cargo.toml --target-dir target/
       - name: Move libraries
-        run: mv target/release/*.{dll,so,dylib} Native-*/
+        run: |
+          NativeDir=Native-${{ runner.os }}-${{ runner.arch }}/
+          mkdir $NativeDir
+          mv target/release/*.{dll,so,dylib} $NativeDir
       - name: Cache binaries
         uses: actions/cache@v4
         with:
