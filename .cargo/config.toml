@@ -1,7 +1,5 @@
 [target.aarch64-apple-darwin]
-linker = "clang"
-rustflags = ["-Clink-arg=-fuse-ld=ld", "-Clink-arg=-lc"]
+rustflags = ["-Clink-arg=-lc"]
 
 [target.x86_64-apple-darwin]
-linker = "clang"
-rustflags = ["-Clink-arg=-fuse-ld=ld", "-Clink-arg=-lc"]
+rustflags = ["-Clink-arg=-lc"]

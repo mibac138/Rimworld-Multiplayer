@@ -89,6 +89,7 @@ jobs:
         sed -i "s/<name>\(.*\)<\/name>\$/<name>\1 [Continuous]<\/name>/" About/About.xml
         mkdir -p output/Multiplayer
         mv About/ Assemblies/ AssembliesCustom/ Defs/ Languages/ Textures/ output/Multiplayer
+        find . -type d -name "Native*" -exec find {} -type f \;
         mv Native-*/ output/Multiplayer/AssembliesNative
         cd output/
         zip -r ../Multiplayer-beta.zip Multiplayer/
