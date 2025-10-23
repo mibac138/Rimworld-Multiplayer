@@ -90,16 +90,16 @@ namespace Multiplayer.Client
         static void TheLinuxWay(string nativeDir)
         {
             mono_dllmap_insert_linux(IntPtr.Zero, MonoWindows, null, MonoLinux, null);
-            FpInit(NativeOS.Windows, nativeDir, FramePointerLibName, (name, path) =>
-                mono_dllmap_insert_windows(IntPtr.Zero, name, null, path, null));
+            FpInit(NativeOS.Linux, nativeDir, FramePointerLibName, (name, path) =>
+                mono_dllmap_insert_linux(IntPtr.Zero, name, null, path, null));
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         static void TheOSXWay(string nativeDir)
         {
             mono_dllmap_insert_osx(IntPtr.Zero, MonoWindows, null, MonoOSX, null);
-            FpInit(NativeOS.Windows, nativeDir, FramePointerLibName, (name, path) =>
-                mono_dllmap_insert_windows(IntPtr.Zero, name, null, path, null));
+            FpInit(NativeOS.OSX, nativeDir, FramePointerLibName, (name, path) =>
+                mono_dllmap_insert_osx(IntPtr.Zero, name, null, path, null));
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
