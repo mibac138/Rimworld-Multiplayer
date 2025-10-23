@@ -33,10 +33,11 @@ jobs:
           suffix=${{ runner.os }}-${{ runner.arch }}
 
           mkdir $NativeDir
-          shopt -s nullglob # It's okay to not match all files, a given runner will only have one of them
-          f=target/release/*.{so,dylib}
-          mv $f "$NativeDir/$(basename "${f%.*}")-$suffix.${f##*.}"
-          shopt -u nullglob
+          find target/release/ -maxdepth 1 -type f \( -name "*.dll" -o -name "*.so" -o -name "*.dylib" \) | while read -r file; do
+            ext="${file##*.}"
+            name="$(basename "$file" ".$ext")"
+            mv "$file" "$NativeDir/${name}-${suffix}.$ext"
+          done
       - name: Move libraries (Windows)
         if: ${{ runner.os == 'Windows' }}
         run: |
@@ -44,10 +45,13 @@ jobs:
           $suffix='${{ runner.os }}-${{ runner.arch }}'
 
           mkdir $NativeDir
-          $file = Get-ChildItem "target/release" -Filter "*.dll" | Select-Object -First 1
-          $newName = "{0}-{1}{2}" -f $file.BaseName, $Suffix, $file.Extension
-          $destPath = Join-Path $NativeDir $newName
-          Move-Item -Path $file.FullName -Destination $destPath
+          Get-ChildItem -Path "target/release" -File |
+            Where-Object { $_.Extension -in ".dll", ".so", ".dylib" } |
+            ForEach-Object {
+              $newName = "{0}-{1}{2}" -f $_.BaseName, $suffix, $_.Extension
+              $destPath = Join-Path $NativeDir $newName
+              Move-Item -Path $_.FullName -Destination $destPath -Force
+          }          
       - name: Cache binaries
         uses: actions/cache@v4
         with:
