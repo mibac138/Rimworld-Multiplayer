@@ -59,31 +59,31 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: Native-*/
-        key: build-native-${{ github.sha }}
+        key: Linux-X64-build-native-${{ github.sha }}
         enableCrossOsArchive: true
     - uses: actions/cache@v4
       with:
-        path: ./Native-Linux-ARM64/
+        path: Native-*/
         key: Linux-ARM64-build-native-${{ github.sha }}
         enableCrossOsArchive: true
     - uses: actions/cache@v4
       with:
-        path: ./Native-Windows-X64/
+        path: Native-*/
         key: Windows-X64-build-native-${{ github.sha }}
         enableCrossOsArchive: true
     - uses: actions/cache@v4
       with:
-        path: ./Native-Windows-ARM64/
+        path: Native-*/
         key: Windows-ARM64-build-native-${{ github.sha }}
         enableCrossOsArchive: true
     - uses: actions/cache@v4
       with:
-        path: ./Native-MacOS-X64/
+        path: Native-*/
         key: macOS-X64-build-native-${{ github.sha }}
         enableCrossOsArchive: true
     - uses: actions/cache@v4
       with:
-        path: ./Native-MacOS-ARM64/
+        path: Native-*/
         key: macOS-ARM64-build-native-${{ github.sha }}
         enableCrossOsArchive: true
 
