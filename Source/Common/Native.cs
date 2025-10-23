@@ -41,15 +41,15 @@ namespace Multiplayer.Client
         {
             var archName = RuntimeInformation.ProcessArchitecture switch
             {
-                Architecture.X64 => "x64",
-                Architecture.Arm64 => "arm64",
+                Architecture.X64 => "X64",
+                Architecture.Arm64 => "ARM64",
                 var arch => throw new Exception($"Unsupported architecture: {arch}")
             };
             var osName = os switch
             {
-                NativeOS.Windows => "win",
-                NativeOS.OSX => "osx",
-                NativeOS.Linux => "linux",
+                NativeOS.Windows => "Windows",
+                NativeOS.OSX => "macOS",
+                NativeOS.Linux => "Linux",
                 _ => throw new ArgumentOutOfRangeException(nameof(os), os, null)
             };
             var prefix = os != NativeOS.Windows ? "lib" : "";
@@ -60,7 +60,7 @@ namespace Multiplayer.Client
                 NativeOS.Linux => "so",
                 _ => throw new ArgumentOutOfRangeException(nameof(os), os, null)
             };
-            var libName = $"{prefix}{lib}-{archName}-{osName}.{ext}";
+            var libName = $"{prefix}{lib}-{osName}-{archName}.{ext}";
             var libPath = Path.Combine(nativeDir, libName);
 
             if (!File.Exists(libPath) && MpVersion.IsDebug)
