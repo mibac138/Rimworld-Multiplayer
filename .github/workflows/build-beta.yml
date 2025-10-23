@@ -30,7 +30,9 @@ jobs:
         run: |
           NativeDir=Native-${{ runner.os }}-${{ runner.arch }}/
           mkdir $NativeDir
+          shopt -s nullglob # It's okay to not match all files, a given runner will only have one of them
           mv target/release/*.dll target/release/*.so target/release/*.dylib $NativeDir
+          shopt -u nullglob
       - name: Cache binaries
         uses: actions/cache@v4
         with:
