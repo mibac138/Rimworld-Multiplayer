@@ -22,18 +22,14 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
       - name: Setup Rust
+        if: false
         uses: dtolnay/rust-toolchain@stable
-      - name: Debug
-        if: ${{ runner.os == 'macOS' }}
-        run: |
-          which -a cc
-          cc -v
       - name: Build native
-        run: cargo build --release --manifest-path native/Cargo.toml --target-dir Native/
+        run: cargo build --release --manifest-path native/Cargo.toml --target-dir Native-${{ runner.os }}-${{ runner.arch }}/
       - name: Cache binaries
         uses: actions/cache@v4
         with:
-          path: Native/
+          path: Native-*/
           key: ${{ runner.os }}-${{ runner.arch }}-build-native-${{ github.sha }}
           enableCrossOsArchive: true
           
