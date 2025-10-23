@@ -52,6 +52,7 @@ namespace Multiplayer.Client
                 NativeOS.Linux => "linux",
                 _ => throw new ArgumentOutOfRangeException(nameof(os), os, null)
             };
+            var prefix = os != NativeOS.Windows ? "lib" : "";
             var ext = os switch
             {
                 NativeOS.Windows => "dll",
@@ -59,7 +60,7 @@ namespace Multiplayer.Client
                 NativeOS.Linux => "so",
                 _ => throw new ArgumentOutOfRangeException(nameof(os), os, null)
             };
-            var libName = $"{lib}-{archName}-{osName}.{ext}";
+            var libName = $"{prefix}{lib}-{archName}-{osName}.{ext}";
             var libPath = Path.Combine(nativeDir, libName);
 
             if (!File.Exists(libPath) && MpVersion.IsDebug)
