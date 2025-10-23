@@ -30,7 +30,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: Native-*/
-          key: build-native-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-build-native-${{ github.sha }}
           enableCrossOsArchive: true
           
   build:
@@ -49,6 +49,7 @@ jobs:
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: 9.x
+        cache: true
       
     - name: Install Mod Dependencies
       run: dotnet restore ${{ env.SLN_PATH }}
@@ -61,31 +62,31 @@ jobs:
         path: Native-*/
         key: build-native-${{ github.sha }}
         enableCrossOsArchive: true
-#    - uses: actions/cache@v4
-#      with:
-#        path: ./Native-Linux-ARM64/
-#        key: Linux-ARM64-build-native-${{ github.sha }}
-#        enableCrossOsArchive: true
-#    - uses: actions/cache@v4
-#      with:
-#        path: ./Native-Windows-X64/
-#        key: Windows-X64-build-native-${{ github.sha }}
-#        enableCrossOsArchive: true
-#    - uses: actions/cache@v4
-#      with:
-#        path: ./Native-Windows-ARM64/
-#        key: Windows-ARM64-build-native-${{ github.sha }}
-#        enableCrossOsArchive: true
-#    - uses: actions/cache@v4
-#      with:
-#        path: ./Native-MacOS-X64/
-#        key: macOS-X64-build-native-${{ github.sha }}
-#        enableCrossOsArchive: true
-#    - uses: actions/cache@v4
-#      with:
-#        path: ./Native-MacOS-ARM64/
-#        key: macOS-ARM64-build-native-${{ github.sha }}
-#        enableCrossOsArchive: true
+    - uses: actions/cache@v4
+      with:
+        path: ./Native-Linux-ARM64/
+        key: Linux-ARM64-build-native-${{ github.sha }}
+        enableCrossOsArchive: true
+    - uses: actions/cache@v4
+      with:
+        path: ./Native-Windows-X64/
+        key: Windows-X64-build-native-${{ github.sha }}
+        enableCrossOsArchive: true
+    - uses: actions/cache@v4
+      with:
+        path: ./Native-Windows-ARM64/
+        key: Windows-ARM64-build-native-${{ github.sha }}
+        enableCrossOsArchive: true
+    - uses: actions/cache@v4
+      with:
+        path: ./Native-MacOS-X64/
+        key: macOS-X64-build-native-${{ github.sha }}
+        enableCrossOsArchive: true
+    - uses: actions/cache@v4
+      with:
+        path: ./Native-MacOS-ARM64/
+        key: macOS-ARM64-build-native-${{ github.sha }}
+        enableCrossOsArchive: true
 
     - name: Package files
       run: |
