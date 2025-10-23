@@ -27,12 +27,19 @@ jobs:
       - name: Build native
         run: cargo build --release --manifest-path native/Cargo.toml --target-dir target/
       - name: Move libraries
+        if: ${{ runner.os != 'Windows' }}
         run: |
           NativeDir=Native-${{ runner.os }}-${{ runner.arch }}/
           mkdir $NativeDir
           shopt -s nullglob # It's okay to not match all files, a given runner will only have one of them
-          mv target/release/*.dll target/release/*.so target/release/*.dylib $NativeDir
+          mv target/release/*.{so,dylib} $NativeDir
           shopt -u nullglob
+      - name: Move libraries (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          $NativeDir=Native-${{ runner.os }}-${{ runner.arch }}/
+          mkdir $NativeDir
+          Move-Item -Path target/release/*.dll -Destination $NativeDir
       - name: Cache binaries
         uses: actions/cache@v4
         with:
