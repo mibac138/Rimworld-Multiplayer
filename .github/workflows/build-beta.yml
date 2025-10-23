@@ -37,7 +37,7 @@ jobs:
       - name: Move libraries (Windows)
         if: ${{ runner.os == 'Windows' }}
         run: |
-          $NativeDir=Native-${{ runner.os }}-${{ runner.arch }}/
+          $NativeDir='Native-${{ runner.os }}-${{ runner.arch }}/'
           mkdir $NativeDir
           Move-Item -Path target/release/*.dll -Destination $NativeDir
       - name: Cache binaries
