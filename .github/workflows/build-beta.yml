@@ -35,7 +35,7 @@ jobs:
           mkdir $NativeDir
           shopt -s nullglob # It's okay to not match all files, a given runner will only have one of them
           f=target/release/*.{so,dylib}
-          mv "$f" "$NativeDir/$(basename "${f%.*}")-$suffix.${f##*.}"
+          mv $f "$NativeDir/$(basename "${f%.*}")-$suffix.${f##*.}"
           shopt -u nullglob
       - name: Move libraries (Windows)
         if: ${{ runner.os == 'Windows' }}
