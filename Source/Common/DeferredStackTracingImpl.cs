@@ -3,9 +3,12 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using HarmonyLib;
+using LudeonTK;
 using Multiplayer.Common;
+using Verse;
 
 namespace Multiplayer.Client.Desyncs;
 
@@ -134,6 +137,7 @@ public static class DeferredStackTracingImpl
             long stackUsage = info.stackUsage;
             if (stackUsage == NotJit)
             {
+                if (depth < 2) Log.Message($"NotJit at depth {depth}");
                 // LMF (Last Managed Frame) layout on x64:
                 // previous
                 // rbp
@@ -211,6 +215,9 @@ public static class DeferredStackTracingImpl
         if (ji == IntPtr.Zero)
             return NotJit;
 
+        if (isArch)
+            return RbpBased;
+
         var start = (uint*)Native.mono_jit_info_get_code_start(ji);
         long usage = 0;
 
@@ -243,6 +250,9 @@ public static class DeferredStackTracingImpl
         throw new Exception($"Deferred stack tracing: Unknown function header {*start} {Native.MethodNameFromAddr(addr, false)}");
     }
 
+    private static bool isX64 = RuntimeInformation.ProcessArchitecture == Architecture.X64;
+    private static bool isArch = RuntimeInformation.ProcessArchitecture == Architecture.X64;
+
     private static unsafe void CheckRbpUsage(uint* at, ref long stackUsage)
     {
         // If rbp is used as a gp reg then the prologue looks like (after frame alloc):
@@ -266,7 +276,7 @@ public static class DeferredStackTracingImpl
 
     static DeferredStackTracingImpl()
     {
-        return;
+        // return;
         // All of this code assumes that the rbp pointer offset stays the same throughout the method invocations.
         // Mono is generally allowed to recompile code, which could cause issues for us, but GetRpb is annotated as
         // NoInline and NoOptimization to heavily discourage any changes and avoid breaking.
@@ -278,36 +288,78 @@ public static class DeferredStackTracingImpl
         var jitInfo = Native.mono_jit_info_table_find(Native.DomainPtr, rbpCodeStart + 1);
         var instStart = Native.mono_jit_info_get_code_start(jitInfo);
         var instLen = Native.mono_jit_info_get_code_size(jitInfo);
-        // Search for the following instruction:
-        // mov rax, imm<MagicNumber> (48b8 <MagicNumber>)
-        // It should directly precede:
-        // mov [rbp-XX], rax
-        // From which we can extract the offset from rbp.
-        byte[] magicBytes = [0x48, 0xb8, ..BitConverter.GetBytes(MagicNumber)];
-        unsafe
+        if (isX64)
         {
-            // Make sure we don't access out-of-bounds memory.
-            // magicBytes.Length -- mov rax, <MagicNumber>
-            // sizeof(uint)      -- mov [rbp-XX], rax
-            var maxLen = instLen - magicBytes.Length - sizeof(uint);
-            for (int i = 0; i < maxLen; i++)
+            // Search for the following instruction:
+            // mov rax, imm<MagicNumber> (48b8 <MagicNumber>)
+            // It should directly precede:
+            // mov [rbp-XX], rax
+            // From which we can extract the offset from rbp.
+            byte[] magicBytes = [0x48, 0xb8, ..BitConverter.GetBytes(MagicNumber)];
+            unsafe
             {
-                byte* at = (byte*)instStart + i;
-                var matches = new ReadOnlySpan<byte>(at, magicBytes.Length).SequenceEqual(magicBytes);
-                if (!matches) continue;
-
-                uint* match = (uint*)(at + magicBytes.Length);
-                // mov [rbp-XX], rax    (488945XX)
-                if ((*match & 0xFFFFFF) == 0x458948)
+                // Make sure we don't access out-of-bounds memory.
+                // magicBytes.Length -- mov rax, <MagicNumber>
+                // sizeof(uint)      -- mov [rbp-XX], rax
+                var maxLen = instLen - magicBytes.Length - sizeof(uint);
+                for (int i = 0; i < maxLen; i++)
                 {
-                    offsetFromRbp = (sbyte)(*match >> 24);
-                    return;
+                    byte* at = (byte*)instStart + i;
+                    var matches = new ReadOnlySpan<byte>(at, magicBytes.Length).SequenceEqual(magicBytes);
+                    if (!matches) continue;
+
+                    uint* match = (uint*)(at + magicBytes.Length);
+                    // mov [rbp-XX], rax    (488945XX)
+                    if ((*match & 0xFFFFFF) == 0x458948)
+                    {
+                        offsetFromRbp = (sbyte)(*match >> 24);
+                        return;
+                    }
                 }
             }
+        }
+        else if (isArch)
+        {
+            var store = 0xFFC003FF;
+            // Search for the following instruction:
+            // mov rax, imm<MagicNumber> (48b8 <MagicNumber>)
+            // It should directly precede:
+            // mov [rbp-XX], rax
+            // From which we can extract the offset from rbp.
+            // byte[] magicBytes = [0x48, 0xb8, ..BitConverter.GetBytes(MagicNumber)];
+            unsafe
+            {
+                // Make sure we don't access out-of-bounds memory.
+                // magicBytes.Length -- mov rax, <MagicNumber>
+                // sizeof(uint)      -- mov [rbp-XX], rax
+//                var maxLen = instLen - magicBytes.Length - sizeof(uint);
+                var maxLen = instLen - sizeof(uint);
+                for (int i = 0; i < maxLen; i++)
+                {
+                    byte* at = (byte*)instStart + i;
+                    // var matches = new ReadOnlySpan<byte>(at, magicBytes.Length).SequenceEqual(magicBytes);
+                    // if (!matches) continue;
 
+                    uint* match = (uint*)at;
+                    // str x0, [x29, #XX]   (XX is in bits 10-21)
+                    if ((*match & store) == 0xF90003A0)
+                    {
+                        var offset = ((*match >> 10) & 0xFFF) * 8;
+                        offsetFromRbp = (sbyte)offset;
+                        // aarch has offset encoded as base+X=target. We have target and need to reverse the process,
+                        // hence the * -1;
+                        offsetFromRbp *= -1;
+                        return;
+                    }
+                }
+            }
+        }
+
+        unsafe
+        {
             // To analyze the assembly dump, remove the offset prefixes at the start of each line and paste the hex to
-            // a site like https://defuse.ca/online-x86-assembler.htm#disassembly2. Choose x64. Search for the
-            // magic number and compare the code with the loop above.
+            // a site like https://shell-storm.org/online/Online-Assembler-and-Disassembler. Choose x64 (or aarch64).
+            // Search for the magic number and compare the code with the loop above.
             var asm = HexDump(new ReadOnlySpan<byte>((void*)instStart, instLen));
             ServerLog.Error(
                 $"Unexpected GetRpb asm structure. Couldn't find a magic bytes match. " +
@@ -336,10 +388,12 @@ public static class DeferredStackTracingImpl
     private const long MagicNumber = 0x0123456789ABCDEF;
     private static sbyte offsetFromRbp = -8;
 
+    [TweakValue("Multiplayer")]
+    private static bool useNativeFramePointer = false;
     [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
     private static unsafe long GetRbp()
     {
-        return Native.get_frame_pointer().ToInt64();
+        if (useNativeFramePointer) return Native.get_frame_pointer().ToInt64();
 
         // This variable declaration compiles down to the following IL:
         // ldc.i8 <MagicNumber>

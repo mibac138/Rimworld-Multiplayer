@@ -64,6 +64,7 @@
     <ModOutputPath>..\..\</ModOutputPath>
   </PropertyGroup>
 
+  <!-- TODO remove? only conditionally compile? (to not require contributors to have rust, but then there are possible disparities between release and dev...) -->
   <Target Name="BuildNative" AfterTargets="Build">
     <Exec Command="cargo build --manifest-path ../../native/Cargo.toml --release" />
 

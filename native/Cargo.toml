@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [profile.release]
 panic = "abort"
+strip = "debuginfo"
 
 [profile.dev]
 panic = "abort"

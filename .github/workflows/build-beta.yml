@@ -21,9 +21,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-      - name: Setup Rust
-        if: false
-        uses: dtolnay/rust-toolchain@stable
       - name: Build native
         run: cargo build --release --manifest-path native/Cargo.toml --target-dir target/
       - name: Move libraries

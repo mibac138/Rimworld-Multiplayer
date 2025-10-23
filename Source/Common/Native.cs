@@ -67,11 +67,16 @@ namespace Multiplayer.Client
             {
                 // The library files are appropriately named during CI. For local development it's fine to use
                 // a simplified file name from a locally compiled build.
-                libName = $"{lib}.{ext}";
+                libName = $"{prefix}{lib}.{ext}";
                 libPath = Path.Combine(nativeDir, libName);
             }
 
-            dllmapInsert.Invoke(lib, Path.Combine(nativeDir, libName));
+            var libAbsPath = Path.Combine(nativeDir, libName);
+            Log.Message($"Native: dll mapping: {lib} -> {libAbsPath}");
+            var libs = Directory.EnumerateFiles(nativeDir).Join();
+            Log.Message($"Native: available libs {libs}");
+
+            dllmapInsert.Invoke(lib, libAbsPath);
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
