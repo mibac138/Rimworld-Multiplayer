@@ -251,7 +251,7 @@ public static class DeferredStackTracingImpl
     }
 
     private static bool isX64 = RuntimeInformation.ProcessArchitecture == Architecture.X64;
-    private static bool isArch = RuntimeInformation.ProcessArchitecture == Architecture.X64;
+    private static bool isArch = RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
 
     private static unsafe void CheckRbpUsage(uint* at, ref long stackUsage)
     {
