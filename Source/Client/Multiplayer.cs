@@ -96,6 +96,8 @@ namespace Multiplayer.Client
 
             DisableOmitFramePointer();
 
+            MpDebugActions.Trace();
+
             MultiplayerLoader.Multiplayer.settingsWindowDrawer =
                 rect => MpSettingsUI.DoSettingsWindowContents(settings, rect);
 

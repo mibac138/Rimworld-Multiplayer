@@ -34,7 +34,7 @@ namespace Multiplayer.Client.Desyncs
             var trace = logItem.raw;
             int hash = 0;
             // Skip this (DeferredStackTracing.Postfix) frame. Keeping it in the trace doesn't provide any value.
-            int depth = DeferredStackTracingImpl.TraceImpl(trace, ref hash, skipFrames: 1);
+            int depth = DeferredStackTracingImpl.TraceImpl(trace, ref hash, skipFrames: 0);
 
             Multiplayer.game.sync.TryAddStackTraceForDesyncLogRaw(logItem, depth, hash);
 

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
-using Multiplayer.Client.Desyncs;
 using Verse;
 
 namespace Multiplayer.Client
@@ -64,7 +63,7 @@ namespace Multiplayer.Client
                     if (!methodNameCache.TryGetValue(addr, out string method))
                         methodNameCache[addr] = method = Native.MethodNameFromAddr(raw[i], false);
 
-                    builder.AppendLine(method != null ? SyncCoordinator.MethodNameWithIL(method) : "Null");
+                    builder.AppendLine(method != null ? SyncCoordinator.MethodNameWithIL(method) : $"{addr:X}");
                 }
 
                 return builder.ToString();

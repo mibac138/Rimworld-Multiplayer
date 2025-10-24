@@ -6,7 +6,9 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using HarmonyLib;
 using Multiplayer.Common;
+using UnityEngine;
 using Verse;
+using Random = System.Random;
 
 namespace Multiplayer.Client
 {
@@ -34,6 +36,7 @@ namespace Multiplayer.Client
             if (os == NativeOS.Windows)
                 TheWindowsWay(nativeDir);
             EarlyInitInternal();
+            register_unity_logger(RustLog);
             Log.Message($"FRAMEPOINTER: {get_frame_pointer()}");
         }
 
@@ -76,7 +79,11 @@ namespace Multiplayer.Client
             var libs = Directory.EnumerateFiles(nativeDir).Join();
             Log.Message($"Native: available libs {libs}");
 
-            dllmapInsert.Invoke(lib, libAbsPath);
+            var rng = new Random().Next();
+            var individualPath = Path.Join(GenFilePaths.TempFolderPath, $"R{rng}-"+libName);
+            File.Copy(libAbsPath, individualPath);
+
+            dllmapInsert.Invoke(lib, individualPath);
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -253,6 +260,21 @@ namespace Multiplayer.Client
 
         [DllImport(FramePointerLibName)]
         public static extern IntPtr get_frame_pointer();
+        [DllImport(FramePointerLibName)]
+        public static extern byte get_stack_trace(IntPtr[] traces, byte tracesLength, byte startOffset);
+
+        [DllImport(FramePointerLibName)]
+        public static extern void register_unity_logger(LogCallback cb);
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        public delegate void LogCallback(IntPtr message);
+
+        public static void RustLog(IntPtr msg)
+        {
+            string s = Marshal.PtrToStringUTF8(msg);
+            Debug.LogError($"Rust error: \n{s}\n\n");
+            Find.WindowStack?.Add(new Dialog_MessageBox("RUST PANIC", layer: WindowLayer.Super));
+        }
     }
 
     /*public static class IcedDisasm

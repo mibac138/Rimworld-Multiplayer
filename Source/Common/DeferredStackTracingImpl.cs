@@ -114,8 +114,23 @@ public static class DeferredStackTracingImpl
 
     public static AddrTable hashTable = new();
 
+    [TweakValue("Multiplayer")]
+    private static bool rustStackTrace = true;
     public static unsafe int TraceImpl(long[] traceIn, ref int hash, int skipFrames = 0)
     {
+        if (rustStackTrace)
+        {
+            var ptrs = new IntPtr[traceIn.Length];
+            var len = Native.get_stack_trace(ptrs, (byte)ptrs.Length, (byte)skipFrames);
+            for (int i = 0; i < len; i++)
+            {
+                var ret = traceIn[i] = ptrs[i].ToInt64();
+                ref var info = ref hashTable.GetOrCreateAddrInfo(ret);
+                if (info.addr == 0) UpdateNewElement(ref info, ret);
+                if (i < HashInfluence && info.nameHash != 0) hash = HashCombineInt(hash, (int)info.nameHash);
+            }
+            return len;
+        }
         if (Native.LmfPtr == 0)
             return 0;
 

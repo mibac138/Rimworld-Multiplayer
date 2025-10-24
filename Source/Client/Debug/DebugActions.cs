@@ -173,6 +173,18 @@ namespace Multiplayer.Client
             Log.Message($"Current opinion stack trace: \n{stackTrace}");
         }
 
+        [DebugAction(MultiplayerLocalCategory, name = "Trace this", allowedGameStates = AllowedGameStates.Invalid)]
+        public static void Trace()
+        {
+            var logItem = StackTraceLogItemRaw.GetFromPool();
+            var trace = logItem.raw;
+            int hash = 0;
+            logItem.depth = DeferredStackTracingImpl.TraceImpl(trace, ref hash);
+            logItem.hash = hash;
+
+            Log.Message(logItem.ToString());
+        }
+
         [DebugAction(MultiplayerCategory, name = "Show pending player", allowedGameStates = AllowedGameStates.Playing)]
         public static void ShowPendingPlayer()
         {
