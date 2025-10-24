@@ -1,13 +1,13 @@
-#![no_std]
-extern crate alloc;
+// #![no_std]
+// extern crate alloc;
 
 use core::arch::asm;
 use core::ffi::{c_char, c_void};
 
-use libc_alloc::LibcAlloc;
+// use libc_alloc::LibcAlloc;
 
-#[global_allocator]
-static ALLOCATOR: LibcAlloc = LibcAlloc;
+// #[global_allocator]
+// static ALLOCATOR: LibcAlloc = LibcAlloc;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn get_frame_pointer() -> *const c_void {
@@ -55,14 +55,14 @@ pub unsafe extern "C" fn get_stack_trace(traces: *mut *mut c_void, traces_len: u
     i as u8
 }
 
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    unsafe {
-        if let Some(cb) = UNITY_LOG_CALLBACK {
-            let msg = alloc::format!("Rust panic: {}\0", info);
-            // should really be a CString but whatever just testing
-            cb(msg.as_ptr() as *const c_char);
-        }
-    }
-    loop {}
-}
+// #[panic_handler]
+// fn panic(info: &core::panic::PanicInfo) -> ! {
+//     unsafe {
+//         if let Some(cb) = UNITY_LOG_CALLBACK {
+//             let msg = format!("Rust panic: {}\0", info);
+//             // should really be a CString but whatever just testing
+//             cb(msg.as_ptr() as *const c_char);
+//         }
+//     }
+//     loop {}
+// }

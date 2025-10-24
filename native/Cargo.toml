@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 backtrace = { version = "0.3.76", default-features = false, features = [] }
-libc_alloc = "1.0.7"
+#libc_alloc = "1.0.7"
 
 [lib]
 name = "fp"
