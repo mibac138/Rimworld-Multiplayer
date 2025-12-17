@@ -110,7 +110,7 @@ namespace Multiplayer.Client
 
                     var modId = data.ReadString();
                     var fileName = data.ReadString();
-                    var contents = data.ReadString(MaxConfigContentLen);
+                    var contents = data.ReadString(MaxConfigContentLen).Replace("\r\n", "\n");
 
                     remoteInfo.remoteModConfigs.Add(new ModConfig(modId, fileName, contents));
                     //remoteInfo.remoteModConfigs[trimmedPath] = remoteInfo.remoteModConfigs[trimmedPath].Insert(0, "a"); // for testing
@@ -195,7 +195,7 @@ namespace Multiplayer.Client
             {
                 try
                 {
-                    var configContents = File.ReadAllText(path);
+                    var configContents = File.ReadAllText(path).Replace("\r\n", "\n");
                     return new ModConfig(id, file, configContents);
                 }
                 catch (Exception e)
