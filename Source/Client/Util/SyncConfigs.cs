@@ -26,6 +26,7 @@ public static class SyncConfigs
     {
         Applicable = Environment.GetEnvironmentVariable(RestartConfigsVariable) is "true";
         Environment.SetEnvironmentVariable(RestartConfigsVariable, "");
+        if (Applicable) Log.Message("[Multiplayer] SyncConfigs enabled");
     }
 
     public static void SaveConfigs(List<ModConfig> configs)
