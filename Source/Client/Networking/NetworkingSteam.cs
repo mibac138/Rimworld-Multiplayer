@@ -129,6 +129,8 @@ namespace Multiplayer.Client.Networking
 
                 if (packet.joinPacket && player == null)
                 {
+                    // Normally added to knownUsers through P2PSessionRequest, but it can be skipped in some cases.
+                    Multiplayer.session.knownUsers.AddDistinct(packet.remote);
                     ConnectionBase conn = new SteamServerConn(packet.remote, packet.channel);
 
                     var preConnect = playerManager.OnPreConnect(packet.remote);
