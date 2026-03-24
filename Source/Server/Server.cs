@@ -4,6 +4,7 @@ using Multiplayer.Common;
 using Multiplayer.Common.Util;
 using Server;
 
+LiteNetLogger.Install();
 ServerLog.detailEnabled = true;
 
 const string settingsFile = "settings.toml";

@@ -32,4 +32,17 @@ namespace Multiplayer.Common
             return $"NetConnection ({peer}) ({username})";
         }
     }
+
+    public class LiteNetLogger : INetLogger
+    {
+        public static void Install() => NetDebug.Logger = new LiteNetLogger();
+
+        public void WriteNet(NetLogLevel level, string str, params object[] args)
+        {
+            if (level == NetLogLevel.Error)
+                ServerLog.Error(string.Format(str, args));
+            else
+                ServerLog.Log(string.Format(str, args));
+        }
+    }
 }
