@@ -124,13 +124,24 @@ namespace Multiplayer.Client
             return ModLister.GetModWithIdentifier(id);
         }
 
+        public static IEnumerable<ModConfig> ConfigDifferenceToLocal(RemoteData remote)
+        {
+            var set = remote.remoteModConfigs.ToHashSet();
+            set.SymmetricExceptWith(SyncConfigs.GetSyncableConfigContents(remote.RemoteModIds.ToList()));
+            return set;
+        }
+
+        public static bool CompareConfigsToLocal(RemoteData remote) =>
+            !remote.hasConfigs ||
+            remote.remoteModConfigs.EqualAsSets(SyncConfigs.GetSyncableConfigContents(remote.RemoteModIds.ToList()));
+
         public static bool CompareToLocal(RemoteData remote)
         {
             return
                 remote.remoteRwVersion == VersionControl.CurrentVersionString &&
                 remote.CompareMods(activeModsSnapshot) == ModListDiff.None &&
                 remote.remoteFiles.DictsEqual(modFilesSnapshot) &&
-                (!remote.hasConfigs || remote.remoteModConfigs.EqualAsSets(SyncConfigs.GetSyncableConfigContents(remote.RemoteModIds.ToList())));
+                CompareConfigsToLocal(remote);
         }
 
         internal static void TakeModDataSnapshot()

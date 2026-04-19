@@ -1,7 +1,10 @@
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using HarmonyLib;
 using Multiplayer.Client.Networking;
+using Multiplayer.Client.Util;
 using Multiplayer.Common;
 using Multiplayer.Common.Networking.Packet;
 using RimWorld;
@@ -119,7 +122,21 @@ namespace Multiplayer.Client
                     .Take(10)
                     .Join(kv => $"{kv.name}: {kv.status}", "\n");
 
-                Find.WindowStack.Add(new JoinDataWindow(remoteInfo){
+                if (SyncConfigs.Applicable && Multiplayer.restartConnect != null &&
+                    !JoinData.CompareConfigsToLocal(remoteInfo))
+                {
+                    var diff = JoinData.ConfigDifferenceToLocal(remoteInfo);
+                    var sha256 = SHA256.Create();
+                    var diffText = diff.Join(config =>
+                    {
+                        var contentBytes = Encoding.UTF8.GetBytes(config.Contents);
+                        var contentHash = sha256.ComputeHash(contentBytes);
+                        return $"ModId: {config.ModId}/{config.FileName}: {contentHash.ToHexString()}";
+                    }, delimiter: "\n");
+                    Log.Error($"[Multiplayer] Config mismatch despite syncing! \n{diffText}\n");
+                }
+
+                Find.WindowStack.Add(new JoinDataWindow(remoteInfo) {
                     connectAnywayDisabled = defDiff ? "MpMismatchDefsDiff".Translate() + defDiffStr : null,
                     connectAnywayCallback = StartDownloading
                 });
