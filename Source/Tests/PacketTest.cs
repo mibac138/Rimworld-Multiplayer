@@ -187,6 +187,15 @@ public class PacketTest
             ]
         };
 
+        var mpModData = new ClientInitDataPacket.ModData
+        {
+            name = "Multiplayer",
+            packageIdNonUnique = "rwmt.multiplayer",
+            source = ClientInitDataPacket.ModSource.SteamWorkshop,
+            config = null,
+            files = [],
+            publishedFileId = 0,
+        };
         yield return new ServerJoinDataPacket
         {
             gameName = "GameName",
@@ -198,7 +207,8 @@ public class PacketTest
                 DefCheckStatus.Ok, DefCheckStatus.Ok, DefCheckStatus.Count_Diff, DefCheckStatus.Hash_Diff,
                 DefCheckStatus.Not_Found
             ],
-            rawServerInitData = [1, 2, 3, 4, 5]
+            configsIncluded = false,
+            ServerInitData = [mpModData],
         };
 
         yield return new ClientFrameTimePacket(0f);
@@ -220,7 +230,7 @@ public class PacketTest
                 new KeyedDefInfo { name = "key", count = 1, hash = 123 },
                 new KeyedDefInfo { name = "key2", count = 0, hash = 0 }
             ],
-            rawData = [1, 2, 3, 4, 5]
+            Mods = [mpModData],
         };
 
         // real code is using GZip compressed content for the traces, but we are only testing on the wire representation
@@ -244,6 +254,13 @@ public class PacketTest
         yield return new ClientDesyncedPacket(100, 0);
     }
 
+    private static readonly List<Type> UnstablePackets = [
+        // Uses deflate compression which *is* lossless, but it is not
+        // guaranteed to always be represented by the same bytes
+        typeof(ClientInitDataPacket),
+        typeof(ServerJoinDataPacket)
+    ];
+
     [TestCaseSource(nameof(RoundtripPackets))]
     public void TestRoundtrip(IPacket original)
     {
@@ -262,6 +279,11 @@ public class PacketTest
         {
             var binder = RuntimeBinderOf(packetsOfType.Key);
             var text = new StringBuilder();
+            var stable = !UnstablePackets.Contains(packetsOfType.Key);
+            if (!stable)
+                text.Append("This packet is not byte-stable while serialized, meaning it can be serialized" +
+                            " differently due to various factors, but it does deserialize into the same object\n\n");
+
             foreach (var packet in packetsOfType)
             {
                 var serialized = binder.Serialize(packet);
@@ -272,7 +294,7 @@ public class PacketTest
             }
 
             await Verify(text).UseDirectory("packet-serializations").UseFileName(packetsOfType.Key.Name).DisableDiff()
-                .AutoVerify(includeBuildServer: false);
+                .AutoVerify(includeBuildServer: !stable);
         }
     }
 

@@ -151,7 +151,8 @@ public class ServerJoiningState : AsyncConnectionState
             rwVersion = serverInitData.RwVersion,
             mpVersion = MpVersion.Version,
             defStatus = defStatus,
-            rawServerInitData = serverInitData.RawData
+            configsIncluded = serverInitData.IncludeConfigs,
+            rawServerInitData = serverInitData.RawData,
         }.Serialize());
 
         if (Server.BootstrapMode)

@@ -1,11 +1,12 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using HarmonyLib;
-using Ionic.Zlib;
 using Multiplayer.Client.Util;
 using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
 using RimWorld;
 using Steamworks;
 using Verse;
@@ -18,100 +19,73 @@ namespace Multiplayer.Client
         public static List<ModMetaData> activeModsSnapshot;
         public static ModFileDict modFilesSnapshot;
 
-        public static byte[] WriteServerData(bool writeConfigs)
+        public static List<ClientInitDataPacket.ModData> WriteServerData(bool writeConfigs)
         {
-            var data = new ByteWriter();
-
-            data.WriteInt32(activeModsSnapshot.Count);
-            foreach (var m in activeModsSnapshot)
+            var configs = writeConfigs ? SyncConfigs.GetSyncableConfigContents(
+                activeModsSnapshot.Select(m => m.PackageIdNonUnique).ToList()
+            ) : [];
+            return activeModsSnapshot.Select(meta =>
             {
-                data.WriteString(m.PackageIdNonUnique);
-                data.WriteString(m.Name);
-                data.WriteULong((ulong)m.GetPublishedFileId());
-                data.WriteEnum(m.Source);
-            }
+                var files = modFilesSnapshot
+                    .Where(kv => kv.Key == meta.PackageIdNonUnique)
+                    .SelectMany(modIdToFilesPair => modIdToFilesPair.Value)
+                    .Select(pathToFilePair => new ClientInitDataPacket.ModFile
+                    {
+                        path = pathToFilePair.Value.relPath,
+                        hash = pathToFilePair.Value.hash,
+                    })
+                    .ToList();
 
-            data.WriteInt32(modFilesSnapshot.Count());
-            foreach (var files in modFilesSnapshot)
-            {
-                data.WriteString(files.Key);
-                data.WriteInt32(files.Value.Count);
-
-                foreach (var file in files.Value.Values)
+                var localConfig = configs.FirstOrDefault(localConfig => localConfig.ModId == meta.PackageIdNonUnique);
+                var source = meta.Source switch
                 {
-                    data.WriteString(file.relPath);
-                    data.WriteInt32(file.hash);
-                }
-            }
+                    ContentSource.Undefined => ClientInitDataPacket.ModSource.Undefined,
+                    ContentSource.OfficialModsFolder => ClientInitDataPacket.ModSource.OfficialModsFolder,
+                    ContentSource.ModsFolder => ClientInitDataPacket.ModSource.ModsFolder,
+                    ContentSource.SteamWorkshop => ClientInitDataPacket.ModSource.SteamWorkshop,
+                    _ => throw new ArgumentOutOfRangeException()
+                };
 
-            data.WriteBool(writeConfigs);
-            if (writeConfigs)
-            {
-                var configs = SyncConfigs.GetSyncableConfigContents(
-                    activeModsSnapshot.Select(m => m.PackageIdNonUnique).ToList()
-                );
-
-                data.WriteInt32(configs.Count);
-                foreach (var config in configs)
+                return new ClientInitDataPacket.ModData
                 {
-                    data.WriteString(config.ModId);
-                    data.WriteString(config.FileName);
-                    data.WriteString(config.Contents);
-                }
-            }
-
-            return GZipStream.CompressBuffer(data.ToArray());
+                    packageIdNonUnique = meta.PackageIdNonUnique,
+                    name = meta.Name,
+                    publishedFileId = (ulong)meta.GetPublishedFileId(),
+                    source = source,
+                    files = files,
+                    config = localConfig == null
+                        ? null
+                        : new ClientInitDataPacket.ModConfig
+                        {
+                            fileName = localConfig.FileName,
+                            contents = localConfig.Contents,
+                        }
+                };
+            }).ToList();
         }
 
-        public static void ReadServerData(byte[] compressedData, RemoteData remoteInfo)
+        public static void ReadServerData(List<ClientInitDataPacket.ModData> mods, RemoteData remoteInfo)
         {
-            var data = new ByteReader(GZipStream.UncompressBuffer(compressedData));
-
-            var modCount = data.ReadInt32();
-            for (int i = 0; i < modCount; i++)
+            foreach (var mod in mods)
             {
-                var packageId = data.ReadString();
-                var name = data.ReadString();
-                var steamId = data.ReadULong();
-                var source = data.ReadEnum<ContentSource>();
-
-                remoteInfo.remoteMods.Add(new ModInfo() { packageId = packageId, name = name, steamId = steamId, source = source });
-            }
-
-            var rootCount = data.ReadInt32();
-            for (int i = 0; i < rootCount; i++)
-            {
-                var modId = data.ReadString();
-                var mod = GetInstalledMod(modId);
-                var fileCount = data.ReadInt32();
-
-                for (int j = 0; j < fileCount; j++)
+                var modInfo = new ModInfo
                 {
-                    var relPath = data.ReadString();
-                    var hash = data.ReadInt32();
-                    string absPath = null;
-
-                    if (mod != null)
-                        absPath = Path.Combine(mod.RootDir.FullName, relPath);
-
-                    remoteInfo.remoteFiles.Add(modId, new ModFile(absPath, relPath, hash));
+                    packageId = mod.packageIdNonUnique, name = mod.name, steamId = mod.publishedFileId,
+                    source = mod.contentSource
+                };
+                remoteInfo.remoteMods.Add(modInfo);
+                var modMeta = GetInstalledMod(modInfo.packageId);
+                foreach (var modFile in mod.files)
+                {
+                    var absPath = modMeta == null ? null : Path.Combine(modMeta.RootDir.FullName, modFile.path);
+                    remoteInfo.remoteFiles.Add(modInfo.packageId, new ModFile(absPath, modFile.path, modFile.hash));
                 }
-            }
 
-            remoteInfo.hasConfigs = data.ReadBool();
-            if (remoteInfo.hasConfigs)
-            {
-                var configCount = data.ReadInt32();
-                for (int i = 0; i < configCount; i++)
+                if (mod.config.HasValue)
                 {
-                    const int MaxConfigContentLen = 8388608; // 8 megabytes
-
-                    var modId = data.ReadString();
-                    var fileName = data.ReadString();
-                    var contents = data.ReadString(MaxConfigContentLen);
-
-                    remoteInfo.remoteModConfigs.Add(new ModConfig(modId, fileName, contents));
-                    //remoteInfo.remoteModConfigs[trimmedPath] = remoteInfo.remoteModConfigs[trimmedPath].Insert(0, "a"); // for testing
+                    var modConfig = mod.config.Value;
+                    remoteInfo.remoteModConfigs.Add(
+                        new ModConfig(modInfo.packageId, modConfig.fileName, modConfig.contents));
                 }
             }
         }
@@ -287,33 +261,20 @@ namespace Multiplayer.Client
         public bool CanSubscribe => steamId != 0;
     }
 
-    public struct ModFile
+    public struct ModFile(string absPath, string relPath, int hash)
     {
-        public string absPath; // Can be null on the remote side
-        public string relPath;
-        public int hash;
+        public string absPath = absPath?.NormalizePath(); // Can be null on the remote side
+        public string relPath = relPath.NormalizePath();
+        public int hash = hash;
 
-        public ModFile(string absPath, string relPath, int hash)
-        {
-            this.absPath = absPath?.NormalizePath();
-            this.relPath = relPath.NormalizePath();
-            this.hash = hash;
-        }
+        public bool Equals(ModFile other) =>
+            relPath == other.relPath && hash == other.hash;
 
-        public bool Equals(ModFile other)
-        {
-            return relPath == other.relPath && hash == other.hash;
-        }
+        public override bool Equals(object obj) =>
+            obj is ModFile other && Equals(other);
 
-        public override bool Equals(object obj)
-        {
-            return obj is ModFile other && Equals(other);
-        }
-
-        public override int GetHashCode()
-        {
-            return Gen.HashCombineInt(relPath.GetHashCode(), hash);
-        }
+        public override int GetHashCode() =>
+            Gen.HashCombineInt(relPath.GetHashCode(), hash);
     }
 
     [HarmonyPatch(typeof(ModLister), nameof(ModLister.RebuildModList))]

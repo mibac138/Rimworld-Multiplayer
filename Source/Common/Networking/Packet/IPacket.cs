@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.IO;
+using System.IO.Compression;
 
 namespace Multiplayer.Common.Networking.Packet;
 
@@ -67,6 +69,9 @@ public static class BinderOf
 
     public static Binder<string> String() =>
         (PacketBuffer buf, ref string obj) => buf.Bind(ref obj);
+
+    public static Binder<List<T>> List<T>(Binder<T> itemBinder) =>
+        (PacketBuffer buf, ref List<T> obj) => buf.Bind(ref obj, itemBinder);
 }
 
 public static class BinderExtensions
@@ -84,6 +89,37 @@ public static class BinderExtensions
         binder(new PacketReader(new ByteReader(src)), ref obj);
         return obj;
     }
+
+    public static Binder<T> Gzipped<T>(this Binder<T> inner, int maxLength = PacketBuffer.DefaultMaxLength) =>
+        (PacketBuffer buf, ref T obj) =>
+        {
+            if (buf.isWriting)
+            {
+                var writer = new ByteWriter();
+                inner(new PacketWriter(writer), ref obj);
+
+                using var outputStream = new MemoryStream();
+                using (var compress = new DeflateStream(outputStream, CompressionLevel.Optimal))
+                {
+                    compress.Write(writer.ToArray(), 0, writer.Position);
+                }
+                var compressed = outputStream.ToArray();
+                buf.BindBytes(ref compressed, maxLength);
+            }
+            else
+            {
+                byte[] compressed = [];
+                buf.BindBytes(ref compressed, maxLength);
+                using var inputStream = new MemoryStream(compressed);
+                using var outputStream = new MemoryStream();
+                using (var decompress = new DeflateStream(inputStream, CompressionMode.Decompress))
+                {
+                    decompress.CopyTo(outputStream);
+                }
+                var reader = new ByteReader(outputStream.ToArray());
+                inner(new PacketReader(reader), ref obj);
+            }
+        };
 }
 
 public abstract class PacketBuffer(bool isWriting)

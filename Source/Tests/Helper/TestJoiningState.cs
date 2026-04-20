@@ -27,7 +27,7 @@ public class TestJoiningState : AsyncConnectionState
             modCtorRoundMode = RoundModeEnum.ToNearest,
             staticCtorRoundMode = RoundModeEnum.ToNearest,
             defInfos = [],
-            rawData = []
+            rawMods = []
         });
 
         var p = await Packet(Packets.Server_UsernameOk);

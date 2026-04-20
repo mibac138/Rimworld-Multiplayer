@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using Multiplayer.Client.Saving;
@@ -124,20 +123,6 @@ namespace Multiplayer.Client
                     );
                 }
             }
-        }
-
-        static void ShowModDebugInfo()
-        {
-            return;
-
-            var info = new RemoteData();
-            JoinData.ReadServerData(JoinData.WriteServerData(true), info);
-            for (int i = 0; i < 200; i++)
-                info.remoteMods.Add(info.remoteMods.Last());
-            info.remoteFiles.Add("rwmt.multiplayer", new ModFile() { relPath = "/Test/Test.xml" });
-            //info.remoteFiles.Add("ludeon.rimworld", new ModFile() { relPath = "/Test/Test.xml" });
-
-            Find.WindowStack.Add(new JoinDataWindow(info));
         }
 
         public static void AskQuitToMainMenu()

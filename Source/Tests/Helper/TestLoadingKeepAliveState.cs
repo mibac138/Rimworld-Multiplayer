@@ -27,7 +27,7 @@ public class TestLoadingKeepAliveState : AsyncConnectionState
             modCtorRoundMode = RoundModeEnum.ToNearest,
             staticCtorRoundMode = RoundModeEnum.ToNearest,
             defInfos = [],
-            rawData = []
+            rawMods = []
         });
 
         var packet = await Packet(Packets.Server_UsernameOk);
