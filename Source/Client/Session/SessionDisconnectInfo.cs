@@ -115,4 +115,19 @@ public struct SessionDisconnectInfo
 
         return disconnectInfo;
     }
+
+    public static SessionDisconnectInfo FromLocalPacketReadException(Exception e)
+    {
+        var disconnectInfo = new SessionDisconnectInfo
+            { titleTranslated = "MpPacketErrorLocal".Translate() };
+
+        if (e is PacketBadIdException)
+        {
+            disconnectInfo.descTranslated = "MpPacketErrorLocalBadId".Translate();
+            disconnectInfo.descTranslated += '\n' + "MpWrongVersionUpdateInfo".Translate();
+            disconnectInfo.wideWindow = true;
+        }
+
+        return disconnectInfo;
+    }
 }

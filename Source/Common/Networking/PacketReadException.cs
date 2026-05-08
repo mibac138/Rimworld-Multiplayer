@@ -12,4 +12,6 @@ namespace Multiplayer.Common
         {
         }
     }
+
+    public class PacketBadIdException(int id) : PacketReadException($"Bad packet id: {id}");
 }
