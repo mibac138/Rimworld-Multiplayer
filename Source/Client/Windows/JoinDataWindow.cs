@@ -47,6 +47,7 @@ namespace Multiplayer.Client
         }
 
         private RemoteData remote;
+        private IConnector connector;
         private Node filesRoot;
         private Node configsRoot;
         public string connectAnywayDisabled;
@@ -54,9 +55,10 @@ namespace Multiplayer.Client
         private ModFileDict filesForUI;
         private ModListDiff modListDiff;
 
-        public JoinDataWindow(RemoteData remote)
+        public JoinDataWindow(RemoteData remote, IConnector connector)
         {
             this.remote = remote;
+            this.connector = connector;
 
             closeOnAccept = false;
             closeOnCancel = false;
@@ -253,7 +255,7 @@ namespace Multiplayer.Client
             }
 
             if (MpUI.ButtonTextWithTip(btnCenter, "MpFixAndRestart".Translate(), "MpRestartNeeded".Translate()))
-                Find.WindowStack.Add(new FixAndRestartWindow(remote));
+                Find.WindowStack.Add(new FixAndRestartWindow(remote, connector));
 
             if (Widgets.ButtonText(btnCenter.Right(150f), "MpMismatchQuit".Translate()))
             {
@@ -678,14 +680,16 @@ namespace Multiplayer.Client
     public class FixAndRestartWindow : Window
     {
         private RemoteData data;
+        private IConnector connector;
         private bool applyModList = true;
         private bool applyConfigs;
 
         public override Vector2 InitialSize => new(400, 200);
 
-        public FixAndRestartWindow(RemoteData data)
+        public FixAndRestartWindow(RemoteData data, IConnector connector)
         {
             this.data = data;
+            this.connector = connector;
             applyConfigs = data.hasConfigs;
 
             closeOnAccept = false;
@@ -753,7 +757,7 @@ namespace Multiplayer.Client
                 SyncConfigs.MarkApplicableForChildProcess();
             }
 
-            AutoJoinHandler.SetForChildProcess(data.connector);
+            AutoJoinHandler.SetForChildProcess(connector);
             GenCommandLine.Restart();
         }
     }

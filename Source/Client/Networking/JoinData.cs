@@ -64,32 +64,6 @@ namespace Multiplayer.Client
             }).ToList();
         }
 
-        public static void ReadServerData(List<ClientInitDataPacket.ModData> mods, RemoteData remoteInfo)
-        {
-            foreach (var mod in mods)
-            {
-                var modInfo = new ModInfo
-                {
-                    packageId = mod.packageIdNonUnique, name = mod.name, steamId = mod.publishedFileId,
-                    source = mod.contentSource
-                };
-                remoteInfo.remoteMods.Add(modInfo);
-                var modMeta = GetInstalledMod(modInfo.packageId);
-                foreach (var modFile in mod.files)
-                {
-                    var absPath = modMeta == null ? null : Path.Combine(modMeta.RootDir.FullName, modFile.path);
-                    remoteInfo.remoteFiles.Add(modInfo.packageId, new ModFile(absPath, modFile.path, modFile.hash));
-                }
-
-                if (mod.config.HasValue)
-                {
-                    var modConfig = mod.config.Value;
-                    remoteInfo.remoteModConfigs.Add(
-                        new ModConfig(modInfo.packageId, modConfig.fileName, modConfig.contents));
-                }
-            }
-        }
-
         public static ModMetaData GetInstalledMod(string id)
         {
             if (ModsConfig.IsActive(id + ModMetaData.SteamModPostfix))
@@ -182,8 +156,6 @@ namespace Multiplayer.Client
 
         public IEnumerable<string> RemoteModIds => remoteMods.Select(m => m.packageId);
 
-        public IConnector connector;
-
         public ModListDiff CompareMods(List<ModMetaData> localMods)
         {
             var mods1 = remoteMods.Select(m => (m.packageId, m.source));
@@ -196,6 +168,49 @@ namespace Multiplayer.Client
                 return ModListDiff.WrongOrder;
 
             return ModListDiff.None;
+        }
+
+        public static RemoteData FromNet(ServerJoinDataPacket packet)
+        {
+            var remoteInfo = new RemoteData
+            {
+                remoteRwVersion = packet.rwVersion,
+                remoteMpVersion = packet.mpVersion,
+                hasConfigs = packet.configsIncluded,
+            };
+
+            foreach (var mod in packet.ServerInitData)
+            {
+                var modInfo = new ModInfo
+                {
+                    packageId = mod.packageIdNonUnique, name = mod.name, steamId = mod.publishedFileId,
+                    source = mod.source switch
+                    {
+                        ClientInitDataPacket.ModSource.Undefined => ContentSource.Undefined,
+                        ClientInitDataPacket.ModSource.OfficialModsFolder => ContentSource.OfficialModsFolder,
+                        ClientInitDataPacket.ModSource.ModsFolder => ContentSource.ModsFolder,
+                        ClientInitDataPacket.ModSource.SteamWorkshop => ContentSource.SteamWorkshop,
+                        _ => throw new ArgumentOutOfRangeException()
+                    }
+                };
+                remoteInfo.remoteMods.Add(modInfo);
+
+                var modMeta = JoinData.GetInstalledMod(modInfo.packageId);
+                foreach (var modFile in mod.files)
+                {
+                    var absPath = modMeta == null ? null : Path.Combine(modMeta.RootDir.FullName, modFile.path);
+                    remoteInfo.remoteFiles.Add(modInfo.packageId, new ModFile(absPath, modFile.path, modFile.hash));
+                }
+
+                if (mod.config.HasValue)
+                {
+                    var modConfig = mod.config.Value;
+                    remoteInfo.remoteModConfigs.Add(
+                        new ModConfig(modInfo.packageId, modConfig.fileName, modConfig.contents));
+                }
+            }
+
+            return remoteInfo;
         }
     }
 

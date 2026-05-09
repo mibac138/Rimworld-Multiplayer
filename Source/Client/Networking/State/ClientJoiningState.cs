@@ -79,13 +79,6 @@ namespace Multiplayer.Client
             Multiplayer.session.gameName = packet.gameName;
             Multiplayer.session.playerId = packet.playerId;
 
-            var remoteInfo = new RemoteData
-            {
-                remoteRwVersion = packet.rwVersion,
-                remoteMpVersion = packet.mpVersion,
-                connector = Multiplayer.session.connector
-            };
-
             var defDiff = false;
             var defStatusMap = new Dictionary<DefInfo, DefCheckStatus>();
             var i = 0;
@@ -98,8 +91,7 @@ namespace Multiplayer.Client
                     defDiff = true;
             }
 
-            JoinData.ReadServerData(packet.ServerInitData, remoteInfo);
-            remoteInfo.hasConfigs = packet.configsIncluded;
+            var remoteInfo = RemoteData.FromNet(packet);
 
             // Delay showing the window for better UX
             OnMainThread.Schedule(Complete, 0.3f);
@@ -121,7 +113,8 @@ namespace Multiplayer.Client
                     .Take(10)
                     .Join(kv => $"{kv.name}: {kv.status}", "\n");
 
-                Find.WindowStack.Add(new JoinDataWindow(remoteInfo){
+                Find.WindowStack.Add(new JoinDataWindow(remoteInfo, Multiplayer.session.connector)
+                {
                     connectAnywayDisabled = defDiff ? "MpMismatchDefsDiff".Translate() + defDiffStr : null,
                     connectAnywayCallback = StartDownloading
                 });
