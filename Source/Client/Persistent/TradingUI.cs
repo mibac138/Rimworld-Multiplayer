@@ -1,11 +1,11 @@
-using HarmonyLib;
-using Multiplayer.API;
-using RimWorld;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using HarmonyLib;
+using Multiplayer.API;
 using Multiplayer.Client.Util;
+using RimWorld;
 using UnityEngine;
 using Verse;
 using Verse.AI.Group;
@@ -96,8 +96,7 @@ namespace Multiplayer.Client
 
                 GUI.BeginGroup(inRect);
                 {
-                    Rect groupRect = new Rect(0, 0, inRect.width, inRect.height);
-                    dialog.DoWindowContents(groupRect);
+                    dialog.DoWindowContents(inRect.AtZero());
                 }
                 GUI.EndGroup();
 
@@ -270,15 +269,12 @@ namespace Multiplayer.Client
     [HarmonyPatch(typeof(Widgets), nameof(Widgets.ButtonImageWithBG))]
     static class DisableTradeModeButtonForOtherFactions
     {
-        private static readonly Texture2D GiftModeIcon = ContentFinder<Texture2D>.Get("UI/Buttons/GiftMode");
-	    private static readonly Texture2D TradeModeIcon = ContentFinder<Texture2D>.Get("UI/Buttons/TradeMode");
-
         static bool Prefix(Rect butRect, Texture2D image, ref bool __result)
         {
             if (TradingWindow.drawingTrade == null || MpTradeSession.current.NegotiatorFaction == Multiplayer.RealPlayerFaction)
                 return true;
 
-            if (image != GiftModeIcon && image != TradeModeIcon)
+            if (image != MultiplayerStatic.GiftModeIcon && image != MultiplayerStatic.TradeModeIcon)
                 return true;
 
             __result = false;

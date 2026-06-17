@@ -1,6 +1,3 @@
-using Multiplayer.Client.Networking;
-using Multiplayer.Common;
-using RimWorld;
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -9,7 +6,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using Multiplayer.Client.AsyncTime;
 using Multiplayer.Client.Comp;
+using Multiplayer.Client.Networking;
 using Multiplayer.Client.Util;
+using Multiplayer.Common;
+using RimWorld;
 using UnityEngine;
 using Verse;
 
@@ -24,7 +24,7 @@ namespace Multiplayer.Client
         // - replay, ingame
         public static async ClientTask HostServer(ServerSettings settings, bool fromReplay)
         {
-            Log.Message($"Starting the server");
+            Log.Message("Starting the server");
 
             CreateSession(settings);
 
@@ -34,13 +34,13 @@ namespace Multiplayer.Client
             // Server already pre-inited in HostWindow
             PrepareLocalServer(settings, fromReplay);
 
-            CreateLocalClient();
+            var serverConn = CreateLocalClient(settings);
             PrepareGame();
             SetGameState(settings);
 
             Multiplayer.session.dataSnapshot = await CreateGameData();
 
-            MakeHostOnServer();
+            MakeHostOnServer(serverConn);
 
             // todo handle sending cmds for hosting from loaded replay?
             SaveLoad.SendGameData(Multiplayer.session.dataSnapshot, false);
@@ -48,18 +48,13 @@ namespace Multiplayer.Client
             StartLocalServer();
         }
 
-        private static void CreateSession(ServerSettings settings)
-        {
-            var session = new MultiplayerSession
+        private static void CreateSession(ServerSettings settings) =>
+            Multiplayer.session = new MultiplayerSession
             {
                 myFactionId = Faction.OfPlayer.loadID,
-                localServerSettings = settings,
                 gameName = settings.gameName,
                 dataSnapshot = Multiplayer.session?.dataSnapshot // This is the case when hosting from a replay
             };
-
-            Multiplayer.session = session;
-        }
 
         private static void PrepareLocalServer(ServerSettings settings, bool fromReplay)
         {
@@ -70,19 +65,14 @@ namespace Multiplayer.Client
             localServer.worldData.hostFactionId = Faction.OfPlayer.loadID;
             localServer.worldData.spectatorFactionId = Multiplayer.WorldComp.spectatorFaction.loadID;
 
-            if (settings.steam)
-                localServer.TickEvent += SteamIntegration.ServerSteamNetTick;
-
             if (fromReplay)
             {
                 localServer.gameTimer = TickPatch.Timer;
                 localServer.startingTimer = TickPatch.Timer;
             }
 
-            localServer.initDataSource = new TaskCompletionSource<ServerInitData>();
-            localServer.CompleteInitData(
-                ServerInitData.Deserialize(new ByteReader(ClientJoiningState.PackInitData(settings.syncConfigs)))
-            );
+            var initData = ClientJoiningState.CreateInitDataPacket(settings.syncConfigs);
+            localServer.StartInitData().SetResult(ServerInitData.FromNet(initData));
         }
 
         private static void PrepareGame()
@@ -96,14 +86,14 @@ namespace Multiplayer.Client
             Find.MainTabsRoot.EscapeCurrentTab(false);
 
             Multiplayer.session.AddMsg("If you are having any issues with the mod and would like some help resolving them, then please reach out to us on our Discord server:", false);
-            Multiplayer.session.AddMsg(new ChatMsg_Url("https://discord.gg/S4bxXpv"), false);
+            Multiplayer.session.AddMsg(new ChatMsg_Url(Multiplayer.DiscordLink), false);
         }
 
         private static void SetGameState(ServerSettings settings)
         {
-            Multiplayer.AsyncWorldTime.SetDesiredTimeSpeed(TimeSpeed.Paused);
+            Multiplayer.AsyncWorldTime.DesiredTimeSpeed = TimeSpeed.Paused;
             foreach (var map in Find.Maps)
-                map.AsyncTime().SetDesiredTimeSpeed(TimeSpeed.Paused);
+                map.AsyncTime().DesiredTimeSpeed = TimeSpeed.Paused;
 
             Find.TickManager.CurTimeSpeed = TimeSpeed.Paused;
 
@@ -187,27 +177,24 @@ namespace Multiplayer.Client
             return faction;
         }
 
-        private static void CreateLocalClient()
+        private static LocalConnection CreateLocalClient(ServerSettings settings)
         {
-            if (Multiplayer.session.localServerSettings.arbiter)
+            if (settings.arbiter)
                 StartArbiter();
 
-            LocalClientConnection localClient = new LocalClientConnection(Multiplayer.username);
-            LocalServerConnection localServerConn = new LocalServerConnection(Multiplayer.username);
-
-            localClient.serverSide = localServerConn;
-            localServerConn.clientSide = localClient;
-
-            localClient.ChangeState(ConnectionStateEnum.ClientPlaying);
-
-            Multiplayer.session.client = localClient;
+            var (client, server) = LocalConnection.Paired(Multiplayer.username);
+            client.ChangeState(ConnectionStateEnum.ClientPlaying);
+            Multiplayer.session.client = client;
+            return server;
         }
 
-        private static void MakeHostOnServer()
+        private static void MakeHostOnServer(LocalConnection serverConnection)
         {
             var server = Multiplayer.LocalServer;
-            var player = server.playerManager.OnConnected(((LocalClientConnection)Multiplayer.Client).serverSide);
+            var player = server.playerManager.OnConnected(serverConnection);
             server.playerManager.MakeHost(player);
+            // Normally set during ClientJoiningState, but when hosting we skip straight through to the playing state.
+            Multiplayer.session.playerId = player.id;
         }
 
         private static void StartLocalServer()
@@ -229,9 +216,11 @@ namespace Multiplayer.Client
         {
             Multiplayer.session.AddMsg("The Arbiter instance is starting...", false);
 
-            Multiplayer.LocalServer.liteNet.SetupArbiterConnection();
+            var arbiterNet = LiteNetArbiterManager.Create(Multiplayer.LocalServer);
+            if (arbiterNet == null) throw new Exception("Failed to setup Arbiter network.");
+            Multiplayer.LocalServer.netManagers.Add(arbiterNet);
 
-            string args = $"-batchmode -nographics -arbiter -logfile arbiter_log.txt -connect=127.0.0.1:{Multiplayer.LocalServer.liteNet.ArbiterPort}";
+            string args = $"-batchmode -nographics -arbiter -logfile arbiter_log.txt -connect=127.0.0.1:{arbiterNet.Port}";
 
             if (GenCommandLine.TryGetCommandLineArg("savedatafolder", out string saveDataFolder))
                 args += $" \"-savedatafolder={saveDataFolder}\"";

@@ -5,6 +5,9 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using HarmonyLib;
+using Multiplayer.Common.ChatCommands;
+using Multiplayer.Common.Networking.Packet;
 
 namespace Multiplayer.Common
 {
@@ -14,6 +17,7 @@ namespace Multiplayer.Common
         {
             MpConnectionState.SetImplementation(ConnectionStateEnum.ServerSteam, typeof(ServerSteamState));
             MpConnectionState.SetImplementation(ConnectionStateEnum.ServerJoining, typeof(ServerJoiningState));
+            MpConnectionState.SetImplementation(ConnectionStateEnum.ServerBootstrap, typeof(ServerBootstrapState));
             MpConnectionState.SetImplementation(ConnectionStateEnum.ServerLoading, typeof(ServerLoadingState));
             MpConnectionState.SetImplementation(ConnectionStateEnum.ServerPlaying, typeof(ServerPlayingState));
         }
@@ -21,17 +25,21 @@ namespace Multiplayer.Common
         public static MultiplayerServer? instance;
 
         public const int DefaultPort = 30502;
+        public const int LanBroadcastPort = 5100;
+        public const string LanBroadcastName = "mp-server";
         public const int MaxUsernameLength = 15;
         public const int MinUsernameLength = 3;
         public const char EndpointSeparator = '&';
+        public const int NetTicksPerSecond = 30; // Not an exact amount. The net loop isn't particularly precise.
 
         public static readonly Regex UsernamePattern = new(@"^[a-zA-Z0-9_]+$");
 
         public WorldData worldData;
         public FreezeManager freezeManager;
         public CommandHandler commands;
+        public ChatCommandManager chatCmdManager;
         public PlayerManager playerManager;
-        public LiteNetManager liteNet;
+        public List<INetManager> netManagers = [];
         public IEnumerable<ServerPlayer> JoinedPlayers => playerManager.JoinedPlayers;
         public IEnumerable<ServerPlayer> PlayingPlayers => playerManager.PlayingPlayers;
         public IEnumerable<ServerPlayer> PlayingIngamePlayers => playerManager.PlayingPlayers.Where(p => p.status == PlayerStatus.Playing);
@@ -43,14 +51,16 @@ namespace Multiplayer.Common
         public ActionQueue queue = new();
         public ServerSettings settings;
 
-        public ServerInitData? initData;
-        public TaskCompletionSource<ServerInitData?> initDataSource = new();
-        public InitDataState initDataState = InitDataState.Waiting;
-
-        private Dictionary<string, ChatCmdHandler> chatCmdHandlers = new();
+        public ServerInitData? InitData => initDataSource.Task.ResultNowOrNull();
+        private TaskCompletionSource<ServerInitData?> initDataSource = new();
+        public InitDataState InitDataState =>
+            InitData != null ? InitDataState.Complete :
+            // started init data must've completed with null, meaning the client disconnected while waiting for the data,
+            // so we are waiting again
+            initDataSource.Task.IsCompleted ? InitDataState.Waiting :
+            InitDataState.Requested;
 
         public volatile bool running;
-        public event Action<MultiplayerServer>? TickEvent;
 
         public bool ArbiterPlaying => PlayingPlayers.Any(p => p.IsArbiter && p.status == PlayerStatus.Playing);
         public ServerPlayer HostPlayer => PlayingPlayers.First(p => p.IsHost);
@@ -64,6 +74,9 @@ namespace Multiplayer.Common
 
         public int NetTimer { get; private set; }
 
+        public bool IsStandaloneServer { get; set; }
+        public StandalonePersistence? persistence;
+
         public MultiplayerServer(ServerSettings settings)
         {
             this.settings = settings;
@@ -71,12 +84,10 @@ namespace Multiplayer.Common
             worldData = new WorldData(this);
             freezeManager = new FreezeManager(this);
             commands = new CommandHandler(this);
+            chatCmdManager = new ChatCommandManager(this);
             playerManager = new PlayerManager(this);
-            liteNet = new LiteNetManager(this);
 
-            RegisterChatCmd("joinpoint", new ChatCmdJoinPoint());
-            RegisterChatCmd("kick", new ChatCmdKick());
-            RegisterChatCmd("stop", new ChatCmdStop());
+            ChatCommandRegistry.Register(chatCmdManager, this);
 
             initDataSource.SetResult(null);
         }
@@ -89,6 +100,7 @@ namespace Multiplayer.Common
             Stopwatch tickTime = Stopwatch.StartNew();
             double realTime = 0;
 
+            List<ServerPlayer> playersBehind = [];
             while (running)
             {
                 try
@@ -101,19 +113,25 @@ namespace Multiplayer.Common
 
                     freezeManager.Tick();
                     queue.RunQueue(ServerLog.Error);
-                    TickEvent?.Invoke(this);
-                    liteNet.Tick();
+                    netManagers.ForEach(manager => manager.Tick());
                     TickNet();
 
                     int ticked = 0;
                     while (realTime > 0 && ticked < 2)
                     {
+                        playersBehind.Clear();
+                        playersBehind.AddRange(PlayingIngamePlayers.Where(p => p.ExtrapolatedTicksBehind > 90));
                         if (!freezeManager.Frozen &&
                             PlayingPlayers.Any(p => p.ExtrapolatedTicksBehind < 40) &&
-                            !PlayingIngamePlayers.Any(p => p.ExtrapolatedTicksBehind > 90))
+                            !playersBehind.Any())
                         {
                             gameTimer++;
                             sentCmdsSnapshot = commands.SentCmds;
+                        }
+                        else if (playersBehind.Any())
+                        {
+                            var text = playersBehind.Join(p => $"{p.Username}");
+                            ServerLog.Log($"Simulation paused because some players are too far behind: {text}");
                         }
 
                         // Run up to three times slower depending on max ticksBehind
@@ -133,8 +151,8 @@ namespace Multiplayer.Common
                         ServerLog.Log($"Server tick took {tickTime.ElapsedMillisDouble()}ms");
 
                     // On Windows, the clock ticks 64 times a second and sleep durations too close to a multiple of 15.625ms
-                    // tend to be rounded up so we sleep for a bit less
-                    int sleepFor = (int)Math.Floor((1000 / 30f - tickTime.ElapsedMillisDouble()) * 0.9f);
+                    // tend to be rounded up, so we sleep for a bit less
+                    int sleepFor = (int)Math.Floor((1000d / NetTicksPerSecond - tickTime.ElapsedMillisDouble()) * 0.9f);
                     if (sleepFor > 0)
                         Thread.Sleep(sleepFor);
                 }
@@ -158,14 +176,20 @@ namespace Multiplayer.Common
         {
             NetTimer++;
 
-            if (NetTimer % 30 == 0)
+            if (NetTimer % NetTicksPerSecond == 0)
                 playerManager.SendLatencies();
 
-            if (NetTimer % 6 == 0)
-                foreach (var player in JoinedPlayers)
-                    player.SendPacket(Packets.Server_KeepAlive, ByteWriter.GetBytes(player.keepAliveId), false);
 
-            SendToPlaying(Packets.Server_TimeControl, ByteWriter.GetBytes(gameTimer, sentCmdsSnapshot, serverTimePerTick), false);
+            if (NetTimer % (NetTicksPerSecond / 5) == 0)
+            {
+                foreach (var player in JoinedPlayers) {
+                    player.SendKeepAlivePacket();
+                }
+            }
+
+            // Send to simulating players as well to update the simulation window for them and actually update further
+            // during the same simulation.
+            SendToPlaying(new ServerTimeControlPacket(gameTimer, sentCmdsSnapshot, serverTimePerTick), false);
 
             serverTimePerTick = PlayingIngamePlayers.MaxOrZero(p => p.frameTime);
 
@@ -181,7 +205,7 @@ namespace Multiplayer.Common
             ServerLog.Detail("Server shutting down...");
 
             playerManager.OnServerStop();
-            liteNet.OnServerStop();
+            netManagers.ForEach(manager => manager.Stop());
 
             instance = null;
         }
@@ -191,16 +215,39 @@ namespace Multiplayer.Common
             queue.Enqueue(action);
         }
 
-        public void SendToPlaying(Packets id, object[] data)
+        public void SendToPlaying<T>(T packet, bool reliable = true, ServerPlayer? excluding = null) where T : IPacket
         {
-            SendToPlaying(id, ByteWriter.GetBytes(data));
-        }
-
-        public void SendToPlaying(Packets id, byte[] data, bool reliable = true, ServerPlayer? excluding = null)
-        {
+            var serialized = packet.Serialize();
             foreach (ServerPlayer player in PlayingPlayers)
                 if (player != excluding)
-                    player.conn.Send(id, data, reliable);
+                    player.conn.Send(serialized, reliable);
+        }
+
+        public void SendToIngame<T>(T packet, bool reliable = true, ServerPlayer? excluding = null) where T : IPacket
+        {
+            var serialized = packet.Serialize();
+            foreach (ServerPlayer player in PlayingIngamePlayers)
+                if (player != excluding)
+                    player.conn.Send(serialized, reliable);
+        }
+
+        public bool CanUseStandaloneMapStreaming(int mapId) => false;
+
+        public void SendMapResponse(ServerPlayer player, int mapId)
+        {
+            if (!CanUseStandaloneMapStreaming(mapId))
+                return;
+
+            ByteWriter writer = new ByteWriter();
+            writer.WriteInt32(mapId);
+
+            var mapCmds = worldData.mapCmds.GetValueSafe(mapId) ?? [];
+            writer.WriteInt32(mapCmds.Count);
+            foreach (var cmd in mapCmds)
+                writer.WritePrefixedBytes(cmd);
+
+            writer.WritePrefixedBytes(worldData.mapData[mapId]);
+            player.conn.SendFragmented(Packets.Server_MapResponse, writer.ToArray());
         }
 
         public ServerPlayer? GetPlayer(string username)
@@ -216,53 +263,38 @@ namespace Multiplayer.Common
         public void SendChat(string msg)
         {
             ServerLog.Detail($"[Chat] {msg}");
-            SendToPlaying(Packets.Server_Chat, new object[] { msg });
+            SendToPlaying(ServerChatPacket.Create(msg));
         }
 
-        public void SendNotification(string key, params string[] args)
-        {
-            SendToPlaying(Packets.Server_Notification, new object[] { key, args });
-        }
+        public void SendNotification(string key, params string[] args) =>
+            SendToPlaying(new ServerNotificationPacket(key) { args = args });
 
-        public void RegisterChatCmd(string cmdName, ChatCmdHandler handler)
-        {
-            chatCmdHandlers[cmdName] = handler;
-        }
+        public void RegisterChatCommand(string commandName, IChatCommand command) =>
+            chatCmdManager.AddCommand(commandName, command);
 
-        public ChatCmdHandler? GetChatCmdHandler(string cmdName)
-        {
-            chatCmdHandlers.TryGetValue(cmdName, out ChatCmdHandler handler);
-            return handler;
-        }
+        public void RegisterChatCommand(string[] commandNames, IChatCommand command, string description = "", string usage = "", bool requiresHost = false) =>
+            chatCmdManager.AddCommands(commandNames, command, description, usage, requiresHost);
 
-        public void HandleChatCmd(IChatSource source, string cmd)
-        {
-            var parts = cmd.Split(' ');
-            var handler = GetChatCmdHandler(parts[0]);
+        [Obsolete("Use RegisterChatCommand instead.")]
+        public void RegisterChatCmd(string cmdName, ChatCmdHandler handler) =>
+            RegisterChatCommand(cmdName, handler);
 
-            if (handler != null)
-            {
-                if (handler.requiresHost && source is ServerPlayer { IsHost: false })
-                    source.SendMsg("No permission");
-                else
-                    handler.Handle(source, parts.SubArray(1));
-            }
-            else
-            {
-                source.SendMsg("Invalid command");
-            }
-        }
+        public void HandleChatCommand(IChatSource source, string command) => chatCmdManager.Handle(source, command);
 
-        public Task<ServerInitData?> InitData()
-        {
-            return initDataSource.Task;
-        }
+        [Obsolete("Use HandleChatCommand instead.")]
+        public void HandleChatCmd(IChatSource source, string cmd) => HandleChatCommand(source, cmd);
 
-        public void CompleteInitData(ServerInitData data)
+        public Task<ServerInitData?> InitDataTask() => initDataSource.Task;
+
+        public bool BootstrapMode { get; set; }
+
+        /// Can only start one init data at a time. A StartInitData is considered complete once
+        /// TaskCompletionResult.SetResult is called. Until that time no new calls to StartInitData will succeed.
+        public TaskCompletionSource<ServerInitData?> StartInitData()
         {
-            initData = data;
-            initDataState = InitDataState.Complete;
-            initDataSource.SetResult(data);
+            if (InitDataState != InitDataState.Waiting)
+                throw new InvalidOperationException($"Can't start init data in state {InitDataState}");
+            return initDataSource = new TaskCompletionSource<ServerInitData?>();
         }
     }
 

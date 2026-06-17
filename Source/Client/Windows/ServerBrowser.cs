@@ -1,53 +1,50 @@
-using LiteNetLib;
-using Multiplayer.Common;
-using RimWorld;
-using Steamworks;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
+using HarmonyLib;
+using LiteNetLib;
+using LudeonTK;
+using Multiplayer.Client.Util;
+using Multiplayer.Common;
+using Multiplayer.Common.Util;
+using RimWorld;
+using Steamworks;
 using UnityEngine;
 using Verse;
-using Verse.Steam;
-using HarmonyLib;
 using Verse.Sound;
-using Multiplayer.Client.Util;
-using Multiplayer.Common.Util;
+using Verse.Steam;
 
 namespace Multiplayer.Client
 {
     public class ServerBrowser : Window
     {
-        private NetManager lanListener;
-        private List<LanServer> servers = new();
+        private LanListener lanListener;
 
         public override Vector2 InitialSize => new(800f, 500f);
 
         public ServerBrowser()
         {
-            EventBasedNetListener listener = new EventBasedNetListener();
-            listener.NetworkReceiveUnconnectedEvent += (endpoint, data, type) =>
-            {
-                if (type != UnconnectedMessageType.Broadcast) return;
-
-                string s = Encoding.UTF8.GetString(data.GetRemainingBytes());
-                if (s == "mp-server")
-                    AddOrUpdate(endpoint);
-            };
-
-            lanListener = new NetManager(listener)
-            {
-                BroadcastReceiveEnabled = true,
-                ReuseAddress = true,
-                IPv6Enabled = IPv6Mode.Disabled
-            };
-
-            lanListener.Start(5100);
-
+            // establish a relay connection in the background, before connecting to speed up the handshake process
+            if (SteamManager.Initialized) SteamNetworkingUtils.InitRelayNetworkAccess();
+            lanListener = new LanListener(expirationMillis: 5000);
             doCloseX = true;
+        }
+
+        [TweakValue("Multiplayer")] private static bool simulateMacOsForCompatWindow = false;
+        public override void PostOpen()
+        {
+            base.PostOpen();
+
+            var arch = RuntimeInformation.ProcessArchitecture;
+            if (simulateMacOsForCompatWindow || arch is Architecture.Arm or Architecture.Arm64)
+            {
+                Find.WindowStack.Add(new Dialog_MessageBox("MpMacCompatibility".Translate()));
+            }
         }
 
         private Vector2 lanScroll;
@@ -97,9 +94,6 @@ namespace Multiplayer.Client
         {
             float x = 0;
 
-            const string websiteLink = "https://rimworldmultiplayer.com";
-            const string discordLink = "https://discord.gg/n5E2cb2Y4Z";
-
             bool Button(Texture2D icon, string labelKey, string tip, Color baseIconColor, float iconSize = 24f)
             {
                 var label = labelKey.Translate();
@@ -134,32 +128,23 @@ namespace Multiplayer.Client
             if (Button(TexButton.ToggleLog, compatLabel, MpUtil.TranslateWithDoubleNewLines(compatLabelDesc, 2), Color.grey, 20))
                 Find.WindowStack.Add(new ModCompatWindow(null, false, false, null));
 
-            if (Button(MultiplayerStatic.WebsiteIcon, "MpWebsiteButton", "MpLinkButtonDesc".Translate() + " " + websiteLink, Color.grey, 20))
-                Application.OpenURL(websiteLink);
+            if (Button(MultiplayerStatic.WebsiteIcon, "MpWebsiteButton", "MpLinkButtonDesc".Translate() + " " + Multiplayer.WebsiteLink, Color.grey, 20))
+                Application.OpenURL(Multiplayer.WebsiteLink);
 
-            if (Button(MultiplayerStatic.DiscordIcon, "MpDiscordButton", "MpLinkButtonDesc".Translate() + " " + discordLink, Color.white))
-                Application.OpenURL(discordLink);
+            if (Button(MultiplayerStatic.DiscordIcon, "MpDiscordButton", "MpLinkButtonDesc".Translate() + " " + Multiplayer.DiscordLink, Color.white))
+                Application.OpenURL(Multiplayer.DiscordLink);
 
             x += 10;
-            Widgets.Label(new Rect(x, 0, 400, 24), "Note: Multiplayer for 1.5 is still in testing phase.");
+            Widgets.Label(new Rect(x, 0, 400, 24), "Note: Multiplayer for 1.6 is a work in progress.");
 
             const string v15Notice =
                 """
-                1.5 and Anomaly compatibility is a work-in-progress. Compatibility with other mods is likely going to take the longest to flesh out.
+                1.6 and Odyssey compatibility is a work-in-progress. Compatibility with other mods is likely going to take the longest to flesh out.
 
-                We recommend downgrading RimWorld to 1.4 if you want to continue playing a stable version.
+                Downgrade RimWorld to 1.5 if you want to continue playing a stable version.
                 """;
 
             TooltipHandler.TipRegion(new Rect(x, 0, 400, 25), v15Notice);
-
-            if (false) // todo
-                Button(
-                    TexButton.NewItem,
-                    "MpActiveConfigsButton",
-                    "MpActiveConfigsButtonDesc1".Translate("Player's game") + "\n\n" + "MpActiveConfigsButtonDesc2".Translate(),
-                    Color.grey,
-                    20
-                );
         }
 
         private bool filesRead;
@@ -299,7 +284,7 @@ namespace Multiplayer.Client
             width += 120;
         }
 
-        private static void CheckGameVersionAndMods(SaveFile file, Action action)
+        public static void CheckGameVersionAndMods(SaveFile file, Action action)
         {
             ScribeMetaHeaderUtility.lastMode = ScribeMetaHeaderUtility.ScribeHeaderMode.Map;
             ScribeMetaHeaderUtility.loadedGameVersion = file.rwVersion;
@@ -483,7 +468,7 @@ namespace Multiplayer.Client
                     Widgets.DrawAltRect(entryRect);
 
                 if (Event.current.type == EventType.Repaint)
-                    GUI.DrawTextureWithTexCoords(new Rect(5, entryRect.y + 4, 32, 32), SteamImages.GetTexture(friend.avatar), new Rect(0, 1, 1, -1));
+                    GUI.DrawTexture(new Rect(5, entryRect.y + 4, 32, 32), SteamImages.GetTexture(friend.avatar));
 
                 using (MpStyle.Set(TextAnchor.MiddleLeft))
                     Widgets.Label(entryRect.Right(45).Up(5), friend.username);
@@ -499,7 +484,7 @@ namespace Multiplayer.Client
                     if (Widgets.ButtonText(playButton, "MpJoinButton".Translate()))
                     {
                         Close(false);
-                        ClientUtil.TrySteamConnectWithWindow(friend.serverHost);
+                        ClientUtil.TryConnectWithWindow(ConnectorRegistry.Steam(friend.serverHost));
                     }
                 }
                 else
@@ -549,7 +534,7 @@ namespace Multiplayer.Client
 
             try
             {
-                ClientUtil.TryConnectWithWindow(addr, port);
+                ClientUtil.TryConnectWithWindow(ConnectorRegistry.LiteNet(addr, port));
                 Multiplayer.settings.Write();
                 return true;
             }
@@ -571,7 +556,7 @@ namespace Multiplayer.Client
             float margin = 100;
             Rect outRect = new Rect(margin, inRect.yMin + 10, inRect.width - 2 * margin, inRect.height - 20);
 
-            float height = servers.Count * 40;
+            float height = lanListener.foundServers.Count * 40;
             Rect viewRect = new Rect(0, 0, outRect.width - 16f, height);
 
             Widgets.BeginScrollView(outRect, ref lanScroll, viewRect, true);
@@ -579,7 +564,7 @@ namespace Multiplayer.Client
             float y = 0;
             int i = 0;
 
-            foreach (LanServer server in servers)
+            foreach (var server in lanListener.foundServers)
             {
                 Rect entryRect = new Rect(0, y, viewRect.width, 40);
                 if (i % 2 == 0)
@@ -596,7 +581,7 @@ namespace Multiplayer.Client
 
                     var address = server.endpoint.Address.ToString();
                     var port = server.endpoint.Port;
-                    ClientUtil.TryConnectWithWindow(address, port);
+                    ClientUtil.TryConnectWithWindow(ConnectorRegistry.LiteNet(address, port));
                 }
 
                 y += entryRect.height;
@@ -608,22 +593,10 @@ namespace Multiplayer.Client
 
         public override void WindowUpdate()
         {
-            UpdateLan();
+            lanListener.Update();
 
             if (SteamManager.Initialized)
                 UpdateSteam();
-        }
-
-        private void UpdateLan()
-        {
-            lanListener.PollEvents();
-
-            for (int i = servers.Count - 1; i >= 0; i--)
-            {
-                LanServer server = servers[i];
-                if (Multiplayer.clock.ElapsedMilliseconds - server.lastUpdate > 5000)
-                    servers.RemoveAt(i);
-            }
         }
 
         private long lastFriendUpdate;
@@ -638,32 +611,9 @@ namespace Multiplayer.Client
             for (int i = 0; i < friendCount; i++)
             {
                 CSteamID friend = SteamFriends.GetFriendByIndex(i, EFriendFlags.k_EFriendFlagImmediate);
-
-                SteamFriends.GetFriendGamePlayed(friend, out FriendGameInfo_t friendGame);
-                bool playingRimworld = friendGame.m_gameID.AppID() == SteamIntegration.RimWorldAppId;
-
-                if (!playingRimworld) continue;
-
-                int avatar = SteamFriends.GetSmallFriendAvatar(friend);
-                string username = SteamFriends.GetFriendPersonaName(friend);
-                string connectValue = SteamFriends.GetFriendRichPresence(friend, "connect");
-
-                CSteamID serverHost = CSteamID.Nil;
-                if (connectValue != null &&
-                    connectValue.Contains(SteamIntegration.SteamConnectStart) &&
-                    ulong.TryParse(connectValue.Substring(SteamIntegration.SteamConnectStart.Length), out ulong hostId))
-                {
-                    serverHost = (CSteamID)hostId;
-                }
-
-                friends.Add(new SteamPersona()
-                {
-                    id = friend,
-                    avatar = avatar,
-                    username = username,
-                    playingRimworld = true,
-                    serverHost = serverHost,
-                });
+                var persona = SteamPersona.Of(friend);
+                if (!persona.playingRimworld) continue;
+                friends.Add(persona);
             }
 
             friends.SortByDescending(f => f.serverHost != CSteamID.Nil);
@@ -678,36 +628,12 @@ namespace Multiplayer.Client
 
         public void Cleanup(bool sync)
         {
-            void Stop(object s) => lanListener.Stop();
+            void Stop(object s) => lanListener.Dispose();
 
             if (sync)
                 Stop(null);
             else
                 ThreadPool.QueueUserWorkItem(Stop);
-        }
-
-        private void AddOrUpdate(IPEndPoint endpoint)
-        {
-            LanServer server = servers.Find(s => s.endpoint.Equals(endpoint));
-
-            if (server == null)
-            {
-                servers.Add(new LanServer()
-                {
-                    endpoint = endpoint,
-                    lastUpdate = Multiplayer.clock.ElapsedMilliseconds
-                });
-            }
-            else
-            {
-                server.lastUpdate = Multiplayer.clock.ElapsedMilliseconds;
-            }
-        }
-
-        class LanServer
-        {
-            public IPEndPoint endpoint;
-            public long lastUpdate;
         }
 
         public override void OnAcceptKeyPressed()
@@ -728,6 +654,75 @@ namespace Multiplayer.Client
 
         public bool playingRimworld;
         public CSteamID serverHost = CSteamID.Nil;
+
+        public static SteamPersona Of(CSteamID user)
+        {
+            SteamFriends.GetFriendGamePlayed(user, out FriendGameInfo_t game);
+            bool playingRimworld = game.m_gameID.AppID() == SteamIntegration.RimWorldAppId;
+
+            return new SteamPersona
+            {
+                id = user,
+                avatar = SteamFriends.GetSmallFriendAvatar(user),
+                username = SteamFriends.GetFriendPersonaName(user),
+                playingRimworld = playingRimworld,
+                serverHost = SteamIntegration.GetConnectHostId(user),
+            };
+        }
     }
 
+    public class LanListener : IDisposable
+    {
+        private NetManager netManager;
+        private int expirationMillis;
+        public readonly List<Server> foundServers = [];
+
+        public class Server
+        {
+            public IPEndPoint endpoint;
+            public long lastUpdate;
+        }
+
+        public LanListener(int expirationMillis)
+        {
+            this.expirationMillis = expirationMillis;
+            var listener = new EventBasedNetListener();
+            listener.NetworkReceiveUnconnectedEvent += (endpoint, data, type) =>
+            {
+                if (type != UnconnectedMessageType.Broadcast) return;
+
+                string s = Encoding.UTF8.GetString(data.GetRemainingBytes());
+                if (s != MultiplayerServer.LanBroadcastName) return;
+                var server = foundServers.Find(server => Equals(server.endpoint, endpoint));
+                if (server == null)
+                {
+                    server = new Server { endpoint = endpoint };
+                    foundServers.Add(server);
+                }
+                server.lastUpdate = Multiplayer.clock.ElapsedMilliseconds;
+            };
+
+            netManager = new NetManager(listener)
+            {
+                BroadcastReceiveEnabled = true,
+                ReuseAddress = true,
+                IPv6Enabled = false
+            };
+
+            netManager.Start(MultiplayerServer.LanBroadcastPort);
+        }
+
+        public void Update()
+        {
+            netManager.PollEvents();
+            for (var i = foundServers.Count - 1; i >= 0; i--)
+            {
+                Server server = foundServers[i];
+                if (Multiplayer.clock.ElapsedMilliseconds - server.lastUpdate > expirationMillis)
+                    foundServers.RemoveAt(i);
+            }
+        }
+
+        public void Dispose() => netManager.Stop();
+    }
 }

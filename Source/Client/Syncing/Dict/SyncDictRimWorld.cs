@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using HarmonyLib;
 using Multiplayer.API;
 using Multiplayer.Common;
 using RimWorld;
@@ -9,8 +8,9 @@ using RimWorld.Planet;
 using Verse;
 using Verse.AI;
 using Verse.AI.Group;
-using static Multiplayer.Client.SyncSerialization;
 using static Multiplayer.Client.CompSerialization;
+using static Multiplayer.Client.SyncSerialization;
+
 // ReSharper disable RedundantLambdaParameterType
 
 namespace Multiplayer.Client
@@ -667,6 +667,25 @@ namespace Multiplayer.Client
                 }
             },
             {
+                (SyncWorker sync, ref Designator_MoveGravship moveGravship) => {
+                    if (sync.isWriting)
+                        sync.Write(moveGravship.marker.GravshipRotation);
+                    else
+                    {
+                        var rot = sync.Read<Rot4>();
+
+                        var gravController = Find.GravshipController;
+                        var marker = gravController.landingMarker;
+
+                        if (marker != null)
+                            marker.GravshipRotation = rot;
+
+                        moveGravship = gravController.moveDesignator;
+                        moveGravship.deselectedRotation = moveGravship.marker.GravshipRotation;
+                    }
+                }, true, false
+            },
+            {
                 (ByteWriter data, DesignationManager manager) =>
                 {
                     var isNull = manager?.map == null;
@@ -746,6 +765,24 @@ namespace Multiplayer.Client
                     return (parent.gun as ThingWithComps).TryGetComp<CompChangeableProjectile>();
                 }
             },
+            {
+                (ByteWriter writer, ReadingOutcomeDoer doer) =>
+                {
+                    WriteSync(writer, doer.Readable);
+                    writer.WriteInt32(doer.Readable.doers.IndexOf(doer));
+                },
+                (ByteReader reader) =>
+                {
+                    var parent = ReadSync<CompReadable>(reader);
+                    var index = reader.ReadInt32();
+
+                    // Make sure we have a valid doer
+                    if (parent == null || index < 0 || index >= parent.doers.Count)
+                        return null;
+
+                    return parent.doers[index];
+                }, true // implicit
+            },
             #endregion
 
             #region Things
@@ -824,7 +861,7 @@ namespace Multiplayer.Client
                         }
                     }
 
-                    return ThingsById.thingsById.GetValueSafe(thingId);
+                    return Multiplayer.ThingsById.GetValueSafe(thingId);
                 }, true
             },
             {
@@ -999,6 +1036,58 @@ namespace Multiplayer.Client
                 (ByteWriter data, Caravan_ForageTracker tracker) => WriteSync(data, tracker?.caravan),
                 (ByteReader data) => ReadSync<Caravan>(data)?.forage
             },
+            {
+                // TODO: Consider using int16 rather that int32 to minimize network traffic.
+                // Investigate if the tiles/layers are small enough to allow that.
+                (ByteWriter data, PlanetTile tile) =>
+                {
+                    data.WriteInt32(tile.tileId);
+                    data.WriteInt32(tile.layerId);
+                },
+                (ByteReader data) => new PlanetTile(data.ReadInt32(), data.ReadInt32()), true // Implicit
+            },
+            {
+                (ByteWriter data, PlanetLayer workGiver) =>
+                {
+                    int layerId = workGiver?.LayerID ?? -1;
+                    WriteSync(data, workGiver.LayerID);
+                },
+                (ByteReader data) => {
+
+                    var layerId = ReadSync<int>(data);
+
+                    if(layerId == -1)
+                        return null;
+
+                    return Find.WorldGrid.PlanetLayers[layerId];
+                }, true
+            },
+            {
+                (ByteWriter data, Tile tile) =>
+                {
+                    var map = Find.Maps.Find(m => m.pocketTileInfo == tile);
+
+                    // Handle pocket map
+                    if (map != null)
+                    {
+                        data.WriteInt32(map.uniqueID);
+                    }
+                    // Handle normal tile
+                    else
+                    {
+                        data.WriteInt32(-1);
+                        WriteSync(data, tile.tile);
+                    }
+                },
+                (ByteReader data) =>
+                {
+                    var pocketMapId = data.ReadInt32();
+
+                    if (pocketMapId >= 0)
+                        return Find.Maps.Find(m => m.uniqueID == pocketMapId)?.pocketTileInfo;
+                    return ReadSync<PlanetTile>(data).Tile;
+                }
+            },
             #endregion
 
             #region Game
@@ -1061,6 +1150,42 @@ namespace Multiplayer.Client
                     return data.MpContext().map.zoneManager.AllZones.Find(zone => zone.ID == zoneId);
                 }, true
             },
+            {
+                (ByteWriter data, Room room) => {
+                    if(room == null){
+                        data.WriteInt32(-1);
+                    } else {
+                        data.MpContext().map = room.Map;
+                        data.WriteInt32(room.ID);
+                    }
+                },
+                (ByteReader data) => {
+                    int roomId = data.ReadInt32();
+                    if (roomId == -1)
+                        return null;
+                    return data.MpContext().map.regionGrid.allRooms.Find(r => r.ID == roomId);
+                }, true
+            },
+            {
+                (ByteWriter data, Plan plan) =>
+                {
+                    if (plan == null)
+                    {
+                        data.WriteInt32(-1);
+                    }
+                    else
+                    {
+                        data.MpContext().map = plan.Map;
+                        data.WriteInt32(plan.ID);
+                    }
+                },
+                (ByteReader data) => {
+                    int zoneId = data.ReadInt32();
+                    if (zoneId == -1)
+                        return null;
+                    return data.MpContext().map.planManager.AllPlans.Find(p => p.ID == zoneId);
+                }, true
+            },
             #endregion
 
             #region Globals
@@ -1121,9 +1246,15 @@ namespace Multiplayer.Client
                         data.WriteByte(2);
                         WriteSync(data, info.WorldObject);
                     }
-                    else {
+                    else if (info.Tile.Valid) {
                         data.WriteByte(3);
                         WriteSync(data, info.Tile);
+                    }
+                    else
+                    {
+                        if (info.IsValid)
+                            throw new SerializationException($"Unable to serialize GlobalTargetInfo {info}");
+                        data.WriteByte(byte.MaxValue);
                     }
                 },
                 (ByteReader data) =>
@@ -1135,8 +1266,10 @@ namespace Multiplayer.Client
                             true) // True to prevent errors/warnings if synced map was null
                         ,
                         2 => new GlobalTargetInfo(ReadSync<WorldObject>(data)),
-                        3 => new GlobalTargetInfo(data.ReadInt32()),
-                        _ => GlobalTargetInfo.Invalid
+                        3 => new GlobalTargetInfo(ReadSync<PlanetTile>(data)),
+                        byte.MaxValue => GlobalTargetInfo.Invalid,
+                        var type =>
+                            throw new SerializationException($"Unable to deserialize GlobalTargetInfo with type {type}"),
                     };
                 }
             },

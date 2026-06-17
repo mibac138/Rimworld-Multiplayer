@@ -1,7 +1,8 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
+using Multiplayer.Common.Networking.Packet;
 
 namespace Multiplayer.Common
 {
@@ -22,22 +23,14 @@ namespace Multiplayer.Common
             this.server = server;
         }
 
-        public void SendLatencies()
-        {
-            var writer = new ByteWriter();
-            writer.WriteByte((byte)PlayerListAction.Latencies);
-
-            writer.WriteInt32(JoinedPlayers.Count());
-            foreach (var player in JoinedPlayers)
-                player.WriteLatencyUpdate(writer);
-
-            server.SendToPlaying(Packets.Server_PlayerList, writer.ToArray());
-        }
+        public void SendLatencies() =>
+            server.SendToPlaying(
+                ServerPlayerListPacket.Latencies(JoinedPlayers.Select(p => p.LatencyPacket())));
 
         // id can be an IPAddress or CSteamID
         public MpDisconnectReason? OnPreConnect(object id)
         {
-            if (server.FullyStarted is false)
+            if (server.FullyStarted is false && !server.BootstrapMode)
                 return MpDisconnectReason.ServerStarting;
 
             if (id is IPAddress addr && IPAddress.IsLoopback(addr))
@@ -78,8 +71,20 @@ namespace Multiplayer.Common
             ServerPlayer player = conn.serverPlayer;
             Players.Remove(player);
 
+            if (server.worldData.CreatingJoinPoint && (player.IsHost || !Players.Any(p => p.hasJoined)))
+            {
+                server.worldData.AbortJoinPointCreation();
+                ServerLog.Log("Aborted join point creation because no players remain.");
+            }
+
             if (player.hasJoined)
             {
+                // Send PlayerCount command to remove the player from their last known map
+                if (player.currentMapId != -1)
+                {
+                    byte[] playerCountData = ByteWriter.GetBytes(player.currentMapId, -1); // previousMap: player's map, newMap: -1 (disconnected)
+                    server.commands.Send(CommandType.PlayerCount, ScheduledCommand.NoFaction, ScheduledCommand.Global, playerCountData);
+                }
                 // todo check player.IsPlaying?
                 // todo FactionId might throw when called for not fully initialized players
                 // if (Players.All(p => p.FactionId != player.FactionId))
@@ -91,7 +96,7 @@ namespace Multiplayer.Common
                 server.SendNotification("MpPlayerDisconnected", conn.username);
                 server.SendChat($"{conn.username} has left.");
 
-                server.SendToPlaying(Packets.Server_PlayerList, new object[] { (byte)PlayerListAction.Remove, player.id });
+                server.SendToPlaying(ServerPlayerListPacket.Remove(player.id));
 
                 player.ResetTimeVotes();
             }
@@ -104,7 +109,7 @@ namespace Multiplayer.Common
         public void OnDesync(ServerPlayer player, int tick, int diffAt)
         {
             player.UpdateStatus(PlayerStatus.Desynced);
-            server.HostPlayer.SendPacket(Packets.Server_Traces, new object[] { TracesPacket.Request, tick, diffAt, player.id });
+            server.HostPlayer.SendPacket(ServerTracesPacket.Request(tick, diffAt, player.id));
 
             player.ResetTimeVotes();
 
@@ -131,7 +136,10 @@ namespace Multiplayer.Common
         public void OnJoin(ServerPlayer player)
         {
             player.hasJoined = true;
-            player.FactionId = player.id == 0 || !server.settings.multifaction ?
+            var standalonePrimaryPlayer = server.IsStandaloneServer &&
+                !server.JoinedPlayers.Any(p => p != player && !p.IsArbiter);
+
+            player.FactionId = standalonePrimaryPlayer || player.id == 0 || !server.settings.multifaction ?
                 server.worldData.hostFactionId :
                 server.worldData.spectatorFactionId;
 
@@ -145,11 +153,7 @@ namespace Multiplayer.Common
                 player.color = color;
             }
 
-            var writer = new ByteWriter();
-            writer.WriteByte((byte)PlayerListAction.Add);
-            writer.WriteRaw(player.SerializePlayerInfo());
-
-            server.SendToPlaying(Packets.Server_PlayerList, writer.ToArray());
+            server.SendToPlaying(ServerPlayerListPacket.Add(player.PlayerInfoPacket()));
         }
 
         public void SendInitDataCommand(ServerPlayer player)

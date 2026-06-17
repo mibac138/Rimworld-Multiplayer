@@ -1,9 +1,13 @@
-using Multiplayer.Client.Networking;
-using Multiplayer.Common;
-using Steamworks;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
+using LudeonTK;
+using Multiplayer.Client.Networking;
+using Multiplayer.Client.Util;
+using Multiplayer.Client.Windows;
+using Multiplayer.Common;
+using RimWorld;
+using Steamworks;
 using UnityEngine;
 using Verse;
 
@@ -13,14 +17,14 @@ namespace Multiplayer.Client
     {
         // Callbacks stored in static fields so they don't get garbage collected
         private static Callback<P2PSessionRequest_t> sessionReq;
-        private static Callback<P2PSessionConnectFail_t> p2pFail;
         private static Callback<FriendRichPresenceUpdate_t> friendRchpUpdate;
         private static Callback<GameRichPresenceJoinRequested_t> gameJoinReq;
         private static Callback<PersonaStateChange_t> personaChange;
+        private static Callback<AvatarImageLoaded_t> avatarLoaded;
 
         public static AppId_t RimWorldAppId;
 
-        public const string SteamConnectStart = " -mpserver=";
+        private const string SteamConnectStart = " -mpserver=";
 
         public static void InitCallbacks()
         {
@@ -28,14 +32,20 @@ namespace Multiplayer.Client
 
             sessionReq = Callback<P2PSessionRequest_t>.Create(req =>
             {
+                ServerLog.Log($"Received P2P session request from {req.m_steamIDRemote}");
                 var session = Multiplayer.session;
-                if (session?.localServerSettings != null && session.localServerSettings.steam && !session.pendingSteam.Contains(req.m_steamIDRemote))
+                if (Multiplayer.LocalServer?.settings.steam == true && !session.pendingSteam.Contains(req.m_steamIDRemote))
                 {
                     if (Multiplayer.settings.autoAcceptSteam)
                         SteamNetworking.AcceptP2PSessionWithUser(req.m_steamIDRemote);
                     else
+                    {
                         session.pendingSteam.Add(req.m_steamIDRemote);
-
+                        PendingPlayerWindow.EnqueueJoinRequest(req.m_steamIDRemote, (joinReq, accepted) =>
+                        {
+                            if(joinReq.steamId.HasValue && accepted) AcceptPlayerJoinRequest(joinReq.steamId.Value);
+                        });
+                    }
                     session.knownUsers.Add(req.m_steamIDRemote);
                     session.NotifyChat();
 
@@ -49,140 +59,98 @@ namespace Multiplayer.Client
 
             gameJoinReq = Callback<GameRichPresenceJoinRequested_t>.Create(req =>
             {
+                if (Current.Game == null)
+                {
+                    ClientUtil.TryConnectWithWindow(ConnectorRegistry.Steam(req.m_steamIDFriend), false);
+                }
+                else
+                {
+                    Messages.Message("MpQuitBeforeAcceptInvite".Translate(), MessageTypeDefOf.RejectInput,
+                        historical: false);
+                }
             });
 
             personaChange = Callback<PersonaStateChange_t>.Create(change =>
             {
+                // When a persona's avatar changes, the avatar id changes too. It's not a problem for us because we
+                // query the avatar id every frame. It'd be nice to remove the old avatar from the SteamImages cache,
+                // but realistically it's not an issue. (Also, it'd require keeping track of the avatar's owner because
+                // I don't think there's a way to query the old avatar id to easily remove it.)
             });
 
-            p2pFail = Callback<P2PSessionConnectFail_t>.Create(fail =>
-            {
-                var session = Multiplayer.session;
-                if (session == null) return;
-
-                var remoteId = fail.m_steamIDRemote;
-                var error = (EP2PSessionError)fail.m_eP2PSessionError;
-
-                if (Multiplayer.Client is SteamBaseConn clientConn && clientConn.remoteId == remoteId)
-                    clientConn.OnError(error);
-
-                var server = Multiplayer.LocalServer;
-                if (server == null) return;
-
-                server.Enqueue(() =>
-                {
-                    var conn = server.playerManager.Players.Select(p => p.conn).OfType<SteamBaseConn>().FirstOrDefault(c => c.remoteId == remoteId);
-                    if (conn != null)
-                        conn.OnError(error);
-                });
-            });
+            avatarLoaded =
+                Callback<AvatarImageLoaded_t>.Create(loaded => SteamImages.GetTexture(loaded.m_iImage, force: true));
         }
 
-        public static IEnumerable<SteamPacket> ReadPackets(int recvChannel)
+        public static void AcceptPlayerJoinRequest(CSteamID id)
         {
-            while (SteamNetworking.IsP2PPacketAvailable(out uint size, recvChannel))
-            {
-                byte[] data = new byte[size];
+            SteamNetworking.AcceptP2PSessionWithUser(id);
+            Multiplayer.session.pendingSteam.Remove(id);
 
-                if (!SteamNetworking.ReadP2PPacket(data, size, out uint sizeRead, out CSteamID remote, recvChannel)) continue;
-                if (data.Length <= 0) continue;
-
-                var reader = new ByteReader(data);
-                byte flags = reader.ReadByte();
-                bool joinPacket = (flags & 1) > 0;
-                bool reliable = (flags & 2) > 0;
-                bool hasChannel = (flags & 4) > 0;
-                ushort channel = hasChannel ? reader.ReadUShort() : (ushort)0;
-
-                yield return new SteamPacket() {
-                    remote = remote, data = reader, joinPacket = joinPacket, reliable = reliable, channel = channel
-                };
-            }
-        }
-
-        public static void ServerSteamNetTick(MultiplayerServer server)
-        {
-            foreach (var packet in ReadPackets(0))
-            {
-                var playerManager = server.playerManager;
-                var player = playerManager.Players.FirstOrDefault(p => p.conn is SteamBaseConn conn && conn.remoteId == packet.remote);
-
-                if (packet.joinPacket && player == null)
-                {
-                    ConnectionBase conn = new SteamServerConn(packet.remote, packet.channel);
-
-                    var preConnect = playerManager.OnPreConnect(packet.remote);
-                    if (preConnect != null)
-                    {
-                        conn.Close(preConnect.Value);
-                        continue;
-                    }
-
-                    conn.ChangeState(ConnectionStateEnum.ServerJoining);
-                    player = playerManager.OnConnected(conn);
-                    player.type = PlayerType.Steam;
-
-                    player.steamId = (ulong)packet.remote;
-                    player.steamPersonaName = SteamFriends.GetFriendPersonaName(packet.remote);
-                    if (player.steamPersonaName.Length == 0)
-                        player.steamPersonaName = "[unknown]";
-
-                    conn.Send(Packets.Server_SteamAccept);
-                }
-
-                if (!packet.joinPacket && player != null)
-                {
-                    player.HandleReceive(packet.data, packet.reliable);
-                }
-            }
+            Messages.Message("MpSteamAccepted".Translate(), MessageTypeDefOf.PositiveEvent, false);
         }
 
         private static Stopwatch lastSteamUpdate = Stopwatch.StartNew();
-        private static bool lastSteam;
+        private static bool lastLocalSteam; // running a server with steam networking
+        private static CSteamID? lastRemoteSteam; // connected to a server with steam networking
 
         public static void UpdateRichPresence()
         {
             if (lastSteamUpdate.ElapsedMilliseconds < 1000) return;
 
-            bool steam = Multiplayer.session?.localServerSettings?.steam ?? false;
-
-            if (steam != lastSteam)
+            var localSteam = Multiplayer.LocalServer?.settings.steam ?? false;
+            var remoteSteam = (Multiplayer.Client as SteamClientConn)?.remoteId;
+            if (localSteam != lastLocalSteam || remoteSteam != lastRemoteSteam)
             {
-                if (steam)
-                    SteamFriends.SetRichPresence("connect", $"{SteamConnectStart}{SteamUser.GetSteamID()}");
-                else
-                    // Null and empty string mentioned in the docs don't seem to work
-                    SteamFriends.SetRichPresence("connect", "nil");
+                string connect;
+                if (localSteam) connect = SteamUser.GetSteamID().ToString();
+                else if (remoteSteam != null) connect = remoteSteam.ToString();
+                else connect = null;
 
-                lastSteam = steam;
+                // Null and empty string mentioned in the docs doesn't seem to work
+                SteamFriends.SetRichPresence("connect", connect != null ? $"{SteamConnectStart}{connect}" : "nil");
+
+                lastLocalSteam = localSteam;
+                lastRemoteSteam = remoteSteam;
             }
 
             lastSteamUpdate.Restart();
         }
-    }
 
-    public struct SteamPacket
-    {
-        public CSteamID remote;
-        public ByteReader data;
-        public bool joinPacket;
-        public bool reliable;
-        public ushort channel;
+        /// Gets the Steam ID of the user hosting the server that the friend is now playing on.
+        public static CSteamID GetConnectHostId(CSteamID friend)
+        {
+            string connectValue = SteamFriends.GetFriendRichPresence(friend, "connect");
+            if (connectValue?.StartsWith(SteamConnectStart, StringComparison.OrdinalIgnoreCase) == true &&
+                ulong.TryParse(connectValue[SteamConnectStart.Length..], out ulong hostId))
+            {
+                return (CSteamID)hostId;
+            }
+
+            return CSteamID.Nil;
+        }
     }
 
     public static class SteamImages
     {
-        public static Dictionary<int, Texture2D> cache = new();
+        private static readonly Dictionary<int, Texture2D> Cache = new();
 
-        // Remember to flip it
-        public static Texture2D GetTexture(int id)
+        [DebugAction(category = MpDebugActions.MultiplayerCategory, name = "Clear image cache",
+            allowedGameStates = AllowedGameStates.Entry)]
+        private static void ClearCache()
         {
-            if (cache.TryGetValue(id, out Texture2D tex))
+            foreach (var tex in Cache.Values) UnityEngine.Object.Destroy(tex);
+            Cache.Clear();
+        }
+
+        public static Texture2D GetTexture(int id, bool force = false)
+        {
+            if (Cache.TryGetValue(id, out Texture2D tex) && !force)
                 return tex;
 
             if (!SteamUtils.GetImageSize(id, out uint width, out uint height))
             {
-                cache[id] = null;
+                Cache[id] = null;
                 return null;
             }
 
@@ -191,17 +159,35 @@ namespace Multiplayer.Client
 
             if (!SteamUtils.GetImageRGBA(id, data, (int)sizeInBytes))
             {
-                cache[id] = null;
+                Cache[id] = null;
                 return null;
             }
 
             tex = new Texture2D((int)width, (int)height, TextureFormat.RGBA32, false);
             tex.LoadRawTextureData(data);
+            FlipVertically(tex);
             tex.Apply();
 
-            cache[id] = tex;
+            if (Cache.TryGetValue(id, out var oldTex)) UnityEngine.Object.Destroy(oldTex);
+            Cache[id] = tex;
 
             return tex;
+        }
+
+        private static void FlipVertically(Texture2D tex)
+        {
+            var pixels = tex.GetPixels32();
+            var buf = new Color32[tex.width];
+
+            for (int y = 0; y < tex.height / 2; y++)
+            {
+                var reversedY = tex.height - y - 1;
+                Array.Copy(pixels, y * tex.width, buf, 0, tex.width);
+                Array.Copy(pixels, reversedY * tex.width, pixels, y * tex.width, tex.width);
+                Array.Copy(buf, 0, pixels, reversedY * tex.width, tex.width);
+            }
+
+            tex.SetPixels32(pixels);
         }
     }
 

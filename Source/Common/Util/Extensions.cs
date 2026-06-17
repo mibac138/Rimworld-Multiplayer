@@ -1,4 +1,3 @@
-using LiteNetLib;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -7,6 +6,8 @@ using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading.Tasks;
+using LiteNetLib;
 
 namespace Multiplayer.Common
 {
@@ -61,6 +62,11 @@ namespace Multiplayer.Common
             T[] result = new T[length];
             Array.Copy(data, index, result, 0, length);
             return result;
+        }
+
+        public static void SetConnection(this NetPeer peer, LiteNetConnection conn)
+        {
+            peer.Tag = conn;
         }
 
         public static LiteNetConnection GetConnection(this NetPeer peer)
@@ -122,6 +128,15 @@ namespace Multiplayer.Common
         public static float MaxOrZero<T>(this IEnumerable<T> items, Func<T, float> map)
         {
             return items.Max(i => (float?)map(i)) ?? 0f;
+        }
+
+        public static T? ResultNowOrNull<T>(this Task<T> task) where T : class? =>
+            task.Status == TaskStatus.RanToCompletion ? task.Result : null;
+
+        public static string RemovePrefix(this string str, string? prefix)
+        {
+            if (prefix == null) return str;
+            return str.StartsWith(prefix) ? str[prefix.Length..] : str;
         }
     }
 

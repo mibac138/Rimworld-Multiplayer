@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net472</TargetFramework>
+    <TargetFramework>net48</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
     <LangVersion>12</LangVersion>
@@ -12,11 +12,18 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Krafs.Rimworld.Ref" Version="1.5.4104" />
-    <PackageReference Include="LiteNetLib" Version="0.9.5.2" />
-    <PackageReference Include="Lib.Harmony" Version="2.3.3" ExcludeAssets="runtime" />
+    <PackageReference Include="Krafs.Rimworld.Ref" Version="1.6.4850" />
+    <PackageReference Include="LiteNetLib" Version="1.3.1" />
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" ExcludeAssets="runtime" />
+    <PackageReference Include="MSBuildGitHash" Version="2.0.2" />
     <PackageReference Include="System.IO.Compression" Version="4.3.0" />
-    <PackageReference Include="RimWorld.MultiplayerAPI" Version="0.5.0" />
+    <PackageReference Include="RimWorld.MultiplayerAPI" Version="0.6.0" />
+    <PackageReference Include="Tomlyn" Version="0.16.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ChatCommandContracts\ChatCommandContracts.csproj" />
+    <ProjectReference Include="..\SourceGen\SourceGen.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <!-- Ignore any system frameworks and get the system assemblies from Krafs.Rimworld.Ref -->
@@ -25,5 +32,11 @@
       <TargetFrameworkDirectory></TargetFrameworkDirectory>
     </PropertyGroup>
   </Target>
+
+  <PropertyGroup Label="Normalise stack trace file locations">
+    <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)'))=$(AssemblyName)/</PathMap>
+  </PropertyGroup>
+
+  <Import Project="PersonalDefinitions.targets" Condition="exists('PersonalDefinitions.targets')" />
 
 </Project>

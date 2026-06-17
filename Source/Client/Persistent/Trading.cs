@@ -754,7 +754,7 @@ namespace Multiplayer.Client
         }
     }
 
-    [HarmonyPatch(typeof(Pawn_AgeTracker), nameof(Pawn_AgeTracker.AgeTick))]
+    [HarmonyPatch(typeof(Pawn_AgeTracker), nameof(Pawn_AgeTracker.AgeTickInterval))]
     static class PawnAgeChanged
     {
         static void Prefix(Pawn_AgeTracker __instance, ref int __state)
@@ -781,7 +781,7 @@ namespace Multiplayer.Client
         {
             foreach (var inst in insts)
             {
-                if (inst.operand == AgeBiologicalFloat)
+                if (inst.operand as MethodInfo == AgeBiologicalFloat)
                 {
                     yield return new CodeInstruction(OpCodes.Callvirt, AgeBiologicalInt);
                     yield return new CodeInstruction(OpCodes.Conv_R4);

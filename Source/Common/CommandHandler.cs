@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Linq;
+using Multiplayer.Common.Networking.Packet;
 
 namespace Multiplayer.Common
 {
@@ -13,48 +15,53 @@ namespace Multiplayer.Common
             this.server = server;
         }
 
-        public void Send(CommandType cmd, int factionId, int mapId, byte[] data, ServerPlayer? sourcePlayer = null, ServerPlayer? fauxSource = null)
+        public void Send(CommandType cmdType, int factionId, int mapId, byte[] data, ServerPlayer? sourcePlayer = null, ServerPlayer? fauxSource = null)
         {
             // policy
             if (sourcePlayer != null)
             {
                 bool debugCmd =
-                    cmd == CommandType.DebugTools ||
-                    cmd == CommandType.Sync && server.initData!.DebugOnlySyncCmds.Contains(BitConverter.ToInt32(data, 0));
+                    cmdType == CommandType.DebugTools ||
+                    cmdType == CommandType.Sync && server.InitData!.DebugOnlySyncCmds.Contains(BitConverter.ToInt32(data, 0));
                 if (debugCmd && !CanUseDevMode(sourcePlayer))
                     return;
 
-                bool hostOnly = cmd == CommandType.Sync && server.initData!.HostOnlySyncCmds.Contains(BitConverter.ToInt32(data, 0));
+                bool hostOnly = cmdType == CommandType.Sync && server.InitData!.HostOnlySyncCmds.Contains(BitConverter.ToInt32(data, 0));
                 if (hostOnly && !sourcePlayer.IsHost)
                     return;
 
-                if (cmd is CommandType.MapTimeSpeed or CommandType.GlobalTimeSpeed &&
-                    server.settings.timeControl == TimeControl.HostOnly && !sourcePlayer.IsHost)
+                if (cmdType is CommandType.MapTimeSpeed or CommandType.GlobalTimeSpeed &&
+                    server.settings.timeControl == TimeControl.HostOnly &&
+                    !sourcePlayer.IsHost &&
+                    server.PlayingPlayers.Any(p => p.IsHost))
                     return;
             }
 
-            byte[] toSave = ScheduledCommand.Serialize(
-                new ScheduledCommand(
-                    cmd,
-                    server.gameTimer,
-                    factionId,
-                    mapId,
-                    sourcePlayer?.id ?? fauxSource?.id ?? ScheduledCommand.NoPlayer,
-                    data));
+            var cmd = new ScheduledCommand(
+                cmdType,
+                server.gameTimer,
+                factionId,
+                mapId,
+                sourcePlayer?.id ?? fauxSource?.id ?? ScheduledCommand.NoPlayer,
+                data);
+            byte[] toSave = ScheduledCommand.Serialize(cmd);
 
             // todo cull target players if not global
             server.worldData.mapCmds.GetOrAddNew(mapId).Add(toSave);
             server.worldData.tmpMapCmds?.GetOrAddNew(mapId).Add(toSave);
 
-            byte[] toSend = toSave.Append(new byte[] { 0 });
-            byte[] toSendSource = toSave.Append(new byte[] { 1 });
-
-            foreach (var player in server.PlayingPlayers)
+            if (server.CanUseStandaloneMapStreaming(mapId))
             {
-                player.conn.Send(
-                    Packets.Server_Command,
-                    sourcePlayer == player ? toSendSource : toSend
-                );
+                var serialized = ServerCommandPacket.From(cmd).Serialize();
+                foreach (var player in server.PlayingPlayers)
+                {
+                    if (!player.hasReportedCurrentMap || player.currentMapId < 0 || player.currentMapId == mapId)
+                        player.conn.Send(serialized, true);
+                }
+            }
+            else
+            {
+                server.SendToPlaying(ServerCommandPacket.From(cmd));
             }
 
             SentCmds++;

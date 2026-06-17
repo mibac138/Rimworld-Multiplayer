@@ -33,7 +33,8 @@ namespace Multiplayer.Client.Desyncs
             var logItem = StackTraceLogItemRaw.GetFromPool();
             var trace = logItem.raw;
             int hash = 0;
-            int depth = DeferredStackTracingImpl.TraceImpl(trace, ref hash);
+            // Skip this (DeferredStackTracing.Postfix) frame. Keeping it in the trace doesn't provide any value.
+            int depth = DeferredStackTracingImpl.TraceImpl(trace, ref hash, skipFrames: 1);
 
             Multiplayer.game.sync.TryAddStackTraceForDesyncLogRaw(logItem, depth, hash);
 
@@ -112,6 +113,13 @@ namespace Multiplayer.Client.Desyncs
 
     [HarmonyPatch(typeof(SteadyEnvironmentEffects), nameof(SteadyEnvironmentEffects.SteadyEnvironmentEffectsTick))]
     static class SteadyEnvironmentEffectsTickTraceIgnore
+    {
+        static void Prefix() => DeferredStackTracing.ignoreTraces++;
+        static void Finalizer() => DeferredStackTracing.ignoreTraces--;
+    }
+
+    [HarmonyPatch(typeof(TempTerrainManager), nameof(TempTerrainManager.Tick))]
+    static class TempTerrainManagerTickTraceIgnore
     {
         static void Prefix() => DeferredStackTracing.ignoreTraces++;
         static void Finalizer() => DeferredStackTracing.ignoreTraces--;

@@ -81,6 +81,7 @@ ipch/
 *.opensdf
 *.sdf
 *.cachefile
+*.lscache
 *.VC.db
 *.VC.VC.opendb
 
@@ -260,6 +261,8 @@ paket-files/
 __pycache__/
 *.pyc
 
+*.binlog
+
 /Assemblies
 /AssembliesCustom
 /Source/Publicise-1.0.0.zip
@@ -269,6 +272,8 @@ __pycache__/
 /Source/dnlib.dll
 /Multiplayer
 Multiplayer*.zip
+
+PersonalDefinitions.targets
 
 !Source/Client/Debug/
 

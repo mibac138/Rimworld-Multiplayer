@@ -4,31 +4,35 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using HarmonyLib;
+using JetBrains.Annotations;
 using Multiplayer.Common;
 using Multiplayer.Common.Util;
 using RimWorld;
 using UnityEngine;
 using Verse;
+using CompressionLevel = System.IO.Compression.CompressionLevel;
 
 namespace Multiplayer.Client.Desyncs;
 
-public class SaveableDesyncInfo
+public class SaveableDesyncInfo(
+    SyncCoordinator coordinator,
+    ClientSyncOpinion local,
+    ClientSyncOpinion remote,
+    int diffAt,
+    bool diffAtFound)
 {
-    private readonly SyncCoordinator coordinator;
-    public readonly ClientSyncOpinion local;
-    public readonly ClientSyncOpinion remote;
-    public readonly int diffAt;
+    public readonly ClientSyncOpinion local = local;
+    public readonly ClientSyncOpinion remote = remote;
+    public readonly int diffAt = diffAt;
+    private readonly Task<string> metadata = Task.Run(MetadataGenerator.Generate);
+    private readonly Task<FileInfo> replay = Task.Run(SaveReplayIfApplicable);
 
-    public SaveableDesyncInfo(SyncCoordinator coordinator, ClientSyncOpinion local, ClientSyncOpinion remote, int diffAt)
-    {
-        this.coordinator = coordinator;
-        this.local = local;
-        this.remote = remote;
-        this.diffAt = diffAt;
-    }
+    public bool ReadyToSave => metadata.IsCompleted && replay.IsCompleted;
 
-    public void Save()
+    public void Save([CanBeNull] HostInfo hostInfo)
     {
         var watch = Stopwatch.StartNew();
 
@@ -38,11 +42,31 @@ public class SaveableDesyncInfo
             using var zip = MpZipFile.Open(Path.Combine(Multiplayer.DesyncsDir, desyncFilePath + ".zip"), ZipArchiveMode.Create);
 
             zip.AddEntry("desync_info", GetDesyncDetails());
+
             zip.AddEntry("local_traces.txt", GetLocalTraces());
-            zip.AddEntry("host_traces.txt", Multiplayer.session.desyncTracesFromHost ?? "No host traces");
+            zip.AddEntry("host_traces.txt", hostInfo?.Traces ?? "No host traces");
+
+            zip.AddEntry("local_jitted_methods.txt", JittedMethods.GetJittedMethodsString());
+            zip.AddEntry("host_jitted_methods.txt", hostInfo?.JittedMethods ?? "No host jitted methods");
 
             var extraLogs = LogGenerator.PrepareLogData();
             if (extraLogs != null) zip.AddEntry("local_logs.txt", extraLogs);
+
+            zip.AddEntry("local_metadata.txt", metadata.Result);
+
+            try
+            {
+                replay.Wait();
+            }
+            catch (AggregateException e)
+            {
+                if (e.InnerExceptions.SingleOrDefault(inner => inner is TaskCanceledException) == null) throw;
+            }
+            if (replay.IsCompletedSuccessfully) {
+                var replayFile = replay.Result;
+                zip.CreateEntryFromFile(replayFile.FullName, "replay.rwmts", CompressionLevel.NoCompression);
+                DeleteFileSilent(replayFile);
+            }
         }
         catch (Exception e)
         {
@@ -67,6 +91,11 @@ public class SaveableDesyncInfo
             }
 
             traceMessage = "Note: trace hashes are equal between local and remote\n\n";
+        }
+        else if (!diffAtFound)
+        {
+            traceMessage = "Note: traces differ in amount, but the existing ones are equal. This means that a tick" +
+                           " has ended sooner on one of the connection sides\n\n";
         }
 
         traceMessage += local.GetFormattedStackTracesForRange(diffAt);
@@ -137,6 +166,24 @@ public class SaveableDesyncInfo
         return $"{FilePrefix}{max + 1:00}";
     }
 
+    private static Task<FileInfo> SaveReplayIfApplicable()
+    {
+        if (!Multiplayer.settings.includeReplayInDesync) return Task.FromCanceled<FileInfo>(new CancellationToken(true));
+
+        try
+        {
+            var tmp = new FileInfo(Path.Combine(Multiplayer.DesyncsDir, "desync-replay.tmp.zip"));
+            if (tmp.Exists) tmp.Delete();
+            Replay.ForSaving(tmp).WriteData(Multiplayer.session.dataSnapshot);
+            return Task.FromResult(tmp);
+        }
+        catch (Exception e)
+        {
+            Log.Error($"Failed to save replay for desync: {e}");
+            return Task.FromException<FileInfo>(e);
+        }
+    }
+
     private static void DeleteFileSilent(FileInfo file)
     {
         try
@@ -147,4 +194,6 @@ public class SaveableDesyncInfo
         {
         }
     }
+
+    public record HostInfo([CanBeNull] string Traces, [CanBeNull] string JittedMethods);
 }

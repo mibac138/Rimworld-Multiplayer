@@ -5,14 +5,17 @@ using Multiplayer.Common;
 
 namespace Tests;
 
-public class TestNetListener : INetEventListener
+public class TestNetListener(Type joiningStateType) : INetEventListener
 {
     public ConnectionBase? conn;
+    private readonly Type joiningStateType = joiningStateType;
 
     public void OnPeerConnected(NetPeer peer)
     {
         conn = new LiteNetConnection(peer);
         conn.username = "test1";
+
+        MpConnectionState.SetImplementation(ConnectionStateEnum.ClientJoining, joiningStateType);
         conn.ChangeState(ConnectionStateEnum.ClientJoining);
 
         Console.WriteLine("TestNetListener: OnPeerConnected");
@@ -28,7 +31,7 @@ public class TestNetListener : INetEventListener
         Assert.Fail($"Network error: {endPoint} {socketError}");
     }
 
-    public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, DeliveryMethod method)
+    public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod method)
     {
         try
         {

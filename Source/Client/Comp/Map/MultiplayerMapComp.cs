@@ -83,6 +83,22 @@ namespace Multiplayer.Client
             return ritualSession;
         }
 
+        public GravshipTravelSession CreateGravshipTravelSession()
+        {
+            GravshipTravelSession gravShipTravelSession = sessionManager.GetFirstOfType<GravshipTravelSession>();
+            if (gravShipTravelSession == null)
+            {
+                gravShipTravelSession = new GravshipTravelSession(map);
+                if (!sessionManager.AddSession(gravShipTravelSession))
+                {
+                    // Shouldn't happen if the session doesn't exist already, show an error just in case
+                    Log.Error($"Failed trying to created a session of type {nameof(GravshipTravelSession)} - prior session did not exist and creating session failed.");
+                    return null;
+                }
+            }
+            return gravShipTravelSession;
+        }
+
         public void DoTick()
         {
             autosaveCounter++;
@@ -113,6 +129,7 @@ namespace Multiplayer.Client
             map.designationManager = data.designationManager;
             map.areaManager = data.areaManager;
             map.zoneManager = data.zoneManager;
+            map.planManager = data.planManager;
 
             map.haulDestinationManager = data.haulDestinationManager;
             map.listerHaulables = data.listerHaulables;
@@ -124,6 +141,11 @@ namespace Multiplayer.Client
         public CustomFactionMapData GetCurrentCustomFactionData()
         {
             return customFactionData[Faction.OfPlayer.loadID];
+        }
+
+        public CustomFactionMapData GetCustomFactionData(Faction faction)
+        {
+            return customFactionData[faction.loadID];
         }
 
         public void Notify_ThingDespawned(Thing t)
@@ -203,7 +225,22 @@ namespace Multiplayer.Client
         {
             return factionData.First(kv => kv.Value.zoneManager == zoneManager).Key;
         }
+        public AreaManager AllAreaManager()
+        {
+            AreaManager areaManager = new AreaManager(this.map);
+
+            foreach (var data in factionData)
+            {
+                foreach (var area in data.Value.areaManager.AllAreas)
+                {
+                    areaManager.areas.Add(area);
+                }
+            }
+            return areaManager;
+        }
     }
+
+
 
     [HarmonyPatch(typeof(MapDrawer), nameof(MapDrawer.DrawMapMesh))]
     static class ForceShowDialogs
@@ -218,7 +255,8 @@ namespace Multiplayer.Client
             {
                 var newDialog = comp.mapDialogs.First().Dialog;
                 //If NO mapdialogs (Dialog_NodeTrees) are open, add the first one to the window stack
-                if (!Find.WindowStack.IsOpen(typeof(Dialog_NodeTree)) && !Find.WindowStack.IsOpen(newDialog.GetType())) {
+                if (!Find.WindowStack.IsOpen(typeof(Dialog_NodeTree)) && !Find.WindowStack.IsOpen(newDialog.GetType()))
+                {
                     Find.WindowStack.Add(newDialog);
                 }
             }

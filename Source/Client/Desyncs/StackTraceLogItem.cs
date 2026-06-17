@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text;
 using Multiplayer.Client.Desyncs;
@@ -5,7 +6,7 @@ using Verse;
 
 namespace Multiplayer.Client
 {
-    public abstract class StackTraceLogItem
+    public abstract class StackTraceLogItem : IDisposable
     {
         public int tick;
         public int hash;
@@ -19,7 +20,9 @@ namespace Multiplayer.Client
             return $"Tick:{tick} Hash:{hash} '{AdditionalInfo}'\n{StackTraceString}";
         }
 
-        public virtual void ReturnToPool() { }
+        public virtual void Dispose()
+        {
+        }
     }
 
     public class StackTraceLogItemObj : StackTraceLogItem
@@ -34,7 +37,8 @@ namespace Multiplayer.Client
 
     public class StackTraceLogItemRaw : StackTraceLogItem
     {
-        public long[] raw = new long[DeferredStackTracingImpl.MaxDepth];
+        public const int MaxDepth = 32;
+        public long[] raw = new long[MaxDepth];
         public int depth;
 
         public int ticksGame;
@@ -60,10 +64,7 @@ namespace Multiplayer.Client
                     if (!methodNameCache.TryGetValue(addr, out string method))
                         methodNameCache[addr] = method = Native.MethodNameFromAddr(raw[i], false);
 
-                    if (method != null)
-                        builder.AppendLine(SyncCoordinator.MethodNameWithIL(method));
-                    else
-                        builder.AppendLine("Null");
+                    builder.AppendLine(method != null ? SyncCoordinator.MethodNameWithIL(method) : "Null");
                 }
 
                 return builder.ToString();
@@ -75,7 +76,7 @@ namespace Multiplayer.Client
             return SimplePool<StackTraceLogItemRaw>.Get();
         }
 
-        public override void ReturnToPool()
+        public override void Dispose()
         {
             depth = 0;
             ticksGame = 0;

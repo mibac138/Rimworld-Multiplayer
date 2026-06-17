@@ -1,6 +1,7 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
+using System.Linq;
 using Multiplayer.Client.Util;
-using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
 using RimWorld;
 using RimWorld.Planet;
 using UnityEngine;
@@ -22,10 +23,20 @@ public class LocationPings
         if (pingsEnabled)
             if (MultiplayerStatic.PingKeyDef.JustPressed || KeyDown(Multiplayer.settings.sendPingButton))
             {
-                if (WorldRendererUtility.WorldRenderedNow)
-                    PingLocation(-1, GenWorld.MouseTile(), Vector3.zero);
+                if (WorldRendererUtility.WorldSelected)
+                {
+                    // Grab the tile under mouse
+                    var tile = GenWorld.MouseTile();
+                    // If the tile is not valid, snap to expandable world objects (handles orbital locations)
+                    if (!tile.Valid)
+                        tile = GenWorld.MouseTile(true);
+
+                    // Make sure the tile is valid and that we didn't ping with the mouse outside of map bounds or in space
+                    if (tile.Valid)
+                        PingLocation(-1, tile, Vector3.zero);
+                }
                 else if (Find.CurrentMap != null)
-                    PingLocation(Find.CurrentMap.uniqueID, 0, UI.MouseMapPosition());
+                    PingLocation(Find.CurrentMap.uniqueID, PlanetTile.Invalid, UI.MouseMapPosition());
             }
 
         for (int i = pings.Count - 1; i >= 0; i--)
@@ -58,28 +69,32 @@ public class LocationPings
         return Input.GetKeyDown(key);
     }
 
-    private void PingLocation(int map, int tile, Vector3 loc)
+    private void PingLocation(int map, PlanetTile tile, Vector3 loc)
     {
-        var writer = new ByteWriter();
-        writer.WriteInt32(map);
-        writer.WriteInt32(tile);
-        writer.WriteFloat(loc.x);
-        writer.WriteFloat(loc.y);
-        writer.WriteFloat(loc.z);
-        Multiplayer.Client.Send(Packets.Client_PingLocation, writer.ToArray());
-
+        Multiplayer.Client.Send(new ClientPingLocPacket(map, tile.tileId, tile.layerId, loc.x, loc.y, loc.z));
         SoundDefOf.TinyBell.PlayOneShotOnCamera();
     }
 
-    public void ReceivePing(int player, int map, int tile, Vector3 loc)
+    public void ReceivePing(ServerPingLocPacket packet)
     {
         if (!Multiplayer.settings.enablePings) return;
 
-        pings.RemoveAll(p => p.player == player);
-        pings.Add(new PingInfo { player = player, mapId = map, planetTile = tile, mapLoc = loc });
+        var data = packet.data;
+        var planetTile = new PlanetTile(data.planetTileId, data.planetTileLayer);
+        // Return early if both the map and planet tile are invalid
+        if (data.mapId == -1 && !planetTile.Valid)
+            return;
+
+        pings.RemoveAll(p => p.player == packet.playerId);
+        pings.Add(new PingInfo {
+            player = packet.playerId,
+            mapId = data.mapId,
+            planetTile = planetTile,
+            mapLoc = new Vector3(data.x, data.y, data.z)
+        });
         alertHidden = false;
 
-        if (player != Multiplayer.session.playerId)
+        if (packet.playerId != Multiplayer.session.playerId)
             SoundDefOf.TinyBell.PlayOneShotOnCamera();
     }
 }

@@ -1,0 +1,310 @@
+using System.Text;
+using FluentAssertions;
+using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
+
+namespace Tests;
+
+public class PacketTest
+{
+    private static IEnumerable<IPacket> RoundtripPackets()
+    {
+        yield return new ClientCursorPacket(1);
+
+        yield return new ClientCursorPacket(2)
+        {
+            map = 0,
+            icon = 42,
+            x = 12.3f,
+            z = -7.7f
+        };
+
+        yield return new ClientCursorPacket(3)
+        {
+            map = 2,
+            icon = 3,
+            x = 1.5f,
+            z = 2.5f,
+            dragX = 4.4f,
+            dragZ = 5.5f
+        };
+
+        yield return new ServerCursorPacket(4, new ClientCursorPacket(123));
+
+        yield return new ClientCommandPacket(CommandType.GlobalTimeSpeed, 1, [1, 2, 3]);
+        yield return new ClientCommandPacket(CommandType.PlayerCount, 123, []);
+        yield return new ClientCommandPacket(CommandType.DebugTools, 0, [255, 0, 255]);
+
+        yield return new ServerCommandPacket
+        {
+            type = CommandType.Sync,
+            ticks = 100,
+            factionId = 1,
+            mapId = 2,
+            playerId = 3,
+            data = [42]
+        };
+
+        yield return new ServerCommandPacket
+        {
+            type = CommandType.CreateJoinPoint,
+            ticks = 200,
+            factionId = 5,
+            mapId = 10,
+            playerId = 7,
+            data = []
+        };
+
+        yield return new ClientPingLocPacket(0, 0, 0, 0f, 0f, 0f);
+
+        yield return new ClientPingLocPacket(1, 42, 3, 10.5f, -2.25f, 99.9f);
+
+        yield return new ServerPingLocPacket(7,
+            new ClientPingLocPacket(5, 123, 1, 1.23f, 4.56f, 7.89f));
+
+        yield return ServerPlayerListPacket.List([
+            new ServerPlayerListPacket.PlayerInfo
+            {
+                id = 1,
+                username = "Alice",
+                latency = 42,
+                type = PlayerType.Normal,
+                status = PlayerStatus.Playing,
+                steamId = 123456789,
+                steamPersonaName = "AliceSteam",
+                ticksBehind = 0,
+                simulating = false,
+                r = 255, g = 0, b = 0,
+                factionId = 10
+            },
+            new ServerPlayerListPacket.PlayerInfo
+            {
+                id = 2,
+                username = "Bob",
+                latency = 99,
+                type = PlayerType.Arbiter,
+                status = PlayerStatus.Desynced,
+                steamId = 987654321,
+                steamPersonaName = "BobBot",
+                ticksBehind = 5,
+                simulating = true,
+                r = 0, g = 255, b = 0,
+                factionId = 20
+            }
+        ]);
+
+        yield return ServerPlayerListPacket.Add(new ServerPlayerListPacket.PlayerInfo
+        {
+            id = 3,
+            username = "Charlie",
+            latency = 10,
+            type = PlayerType.Steam,
+            status = PlayerStatus.Simulating,
+            steamId = 111222333,
+            steamPersonaName = "CharlieC",
+            ticksBehind = 1,
+            simulating = false,
+            r = 0, g = 0, b = 255,
+            factionId = 30
+        });
+
+        yield return ServerPlayerListPacket.Remove(99);
+
+        yield return ServerPlayerListPacket.Latencies([
+            new ServerPlayerListPacket.PlayerLatency
+            {
+                playerId = 1,
+                latency = 42,
+                ticksBehind = 0,
+                simulating = false,
+                frameTime = 16.67f
+            },
+            new ServerPlayerListPacket.PlayerLatency
+            {
+                playerId = 2,
+                latency = 77,
+                ticksBehind = 3,
+                simulating = true,
+                frameTime = 33.33f
+            }
+        ]);
+
+        yield return ServerPlayerListPacket.Status(1, PlayerStatus.Playing);
+
+        var sampleOpinion = new SyncOpinion
+        {
+            startTick = 12345,
+            commandRandomStates = [1, 2, 3],
+            worldRandomStates = [10, 20, 30],
+            mapRandomStates =
+            [
+                new MapRandomState { mapId = 1, randomStates = [111, 222] },
+                new MapRandomState { mapId = 2, randomStates = [333, 444, 555] }
+            ],
+            traceHashes = [999, 888, 777],
+            simulating = true,
+            roundMode = RoundModeEnum.ToNearest
+        };
+
+        yield return new ClientSyncInfoPacket { SyncOpinion = sampleOpinion };
+        yield return new ServerSyncInfoPacket { SyncOpinion = sampleOpinion };
+
+        yield return new ClientSetFactionPacket(123, 123);
+        yield return new ServerSetFactionPacket(123, 123);
+
+        yield return new ClientKeepAlivePacket(999, 90, false, 1111);
+        yield return new ServerKeepAlivePacket(256);
+
+        yield return new ServerTimeControlPacket(2_123_456, 1000, 1.2f);
+
+        yield return new ServerFreezePacket(true, 1234);
+        yield return new ServerFreezePacket(false, 9876);
+        yield return ClientFreezePacket.Freeze();
+        yield return ClientFreezePacket.Unfreeze();
+
+        yield return ServerChatPacket.Create("");
+        yield return ServerChatPacket.Create("ABC123!@#");
+        yield return ServerChatPacket.CreateRaw("Usage: whois <username>");
+
+        yield return ClientChatPacket.Create("");
+        yield return ClientChatPacket.Create("ABC123!@#");
+
+        yield return new ClientProtocolPacket(50);
+
+        yield return new ServerProtocolOkPacket(true, true) { autosaveInterval = 5f, autosaveUnit = AutosaveUnit.Minutes };
+        yield return new ServerProtocolOkPacket(false, false);
+
+        yield return new ClientUsernamePacket("username");
+        yield return new ClientUsernamePacket("username", "password");
+
+        yield return new ClientJoinDataPacket
+        {
+            modCtorRoundMode = RoundModeEnum.Downward,
+            staticCtorRoundMode = RoundModeEnum.TowardZero,
+            defInfos =
+            [
+                new KeyedDefInfo { name = "key", count = 1, hash = 123 },
+                new KeyedDefInfo { name = "key2", count = 0, hash = 0 }
+            ]
+        };
+
+        var mpModData = new ClientInitDataPacket.ModData
+        {
+            name = "Multiplayer",
+            packageIdNonUnique = "rwmt.multiplayer",
+            source = ClientInitDataPacket.ModSource.SteamWorkshop,
+            config = null,
+            files = [],
+            publishedFileId = 0,
+        };
+        yield return new ServerJoinDataPacket
+        {
+            gameName = "GameName",
+            playerId = 1,
+            rwVersion = "1.6.4566",
+            mpVersion = "0.11.0+123456",
+            defStatus =
+            [
+                DefCheckStatus.Ok, DefCheckStatus.Ok, DefCheckStatus.Count_Diff, DefCheckStatus.Hash_Diff,
+                DefCheckStatus.Not_Found
+            ],
+            configsIncluded = false,
+            ServerInitData = [mpModData],
+        };
+
+        yield return new ClientFrameTimePacket(0f);
+        yield return new ClientFrameTimePacket(0.5f);
+        yield return new ClientFrameTimePacket(123f);
+
+        yield return new ServerInitDataRequestPacket(true);
+        yield return new ServerInitDataRequestPacket(false);
+
+        yield return new ClientInitDataPacket
+        {
+            rwVersion = "1.0.0",
+            debugOnlySyncCmds = [1, 2, 3, 4],
+            hostOnlySyncCmds = [1],
+            modCtorRoundMode = RoundModeEnum.ToNearest,
+            staticCtorRoundMode = RoundModeEnum.TowardZero,
+            defInfos =
+            [
+                new KeyedDefInfo { name = "key", count = 1, hash = 123 },
+                new KeyedDefInfo { name = "key2", count = 0, hash = 0 }
+            ],
+            Mods = [mpModData],
+        };
+
+        // real code is using GZip compressed content for the traces, but we are only testing on the wire representation
+        // and are treating the bytes as opaque, so it doesn't matter
+        yield return new ClientTracesPacket { playerId = 123, rawTraces = "trace 1\ntrace 2"u8.ToArray(), rawJittedMethods = "jitted methods"u8.ToArray() };
+        yield return ServerTracesPacket.Request(9001, 1000, 5);
+        yield return ServerTracesPacket.Transfer("trace 1\ntrace 2"u8.ToArray(), "jitted methods"u8.ToArray());
+
+        yield return new ServerNotificationPacket("key");
+        yield return new ServerNotificationPacket("key") { args = ["1", "2", "3"] };
+
+        yield return new ClientSelectedPacket
+            { newlySelectedIds = [1, 2, 3], unselectedIds = [4, 5, 6], reset = false };
+        yield return new ClientSelectedPacket { newlySelectedIds = [999], unselectedIds = [111], reset = true };
+
+        yield return new ServerSelectedPacket(1,
+            new ClientSelectedPacket { newlySelectedIds = [1, 10, 100], reset = false, unselectedIds = [] });
+
+        yield return new ClientDesyncedPacket(1234, 4567);
+        yield return new ClientDesyncedPacket(0, 0);
+        yield return new ClientDesyncedPacket(100, 0);
+    }
+
+    private static readonly List<Type> UnstablePackets = [
+        // Uses deflate compression which *is* lossless, but it is not
+        // guaranteed to always be represented by the same bytes
+        typeof(ClientInitDataPacket),
+        typeof(ServerJoinDataPacket)
+    ];
+
+    [TestCaseSource(nameof(RoundtripPackets))]
+    public void TestRoundtrip(IPacket original)
+    {
+        var binder = RuntimeBinderOf(original);
+        var serialize = binder.Serialize(original);
+        var deserialized = binder.Deserialize(serialize);
+
+        deserialized.Should().BeEquivalentTo(original, opts => opts.PreferringRuntimeMemberTypes());
+    }
+
+    [Test]
+    public async Task SnapshotBinaryRepresentation()
+    {
+        var packetsByType = RoundtripPackets().GroupBy(p => p.GetType());
+        foreach (var packetsOfType in packetsByType)
+        {
+            var binder = RuntimeBinderOf(packetsOfType.Key);
+            var text = new StringBuilder();
+            var stable = !UnstablePackets.Contains(packetsOfType.Key);
+            if (!stable)
+                text.Append("This packet is not byte-stable while serialized, meaning it can be serialized" +
+                            " differently due to various factors, but it does deserialize into the same object\n\n");
+
+            foreach (var packet in packetsOfType)
+            {
+                var serialized = binder.Serialize(packet);
+                text.Append(BitConverter.ToString(serialized));
+                if (serialized.Length > 32)
+                    text.Append($" ({serialized.Length} bytes)");
+                text.AppendLine();
+            }
+
+            await Verify(text).UseDirectory("packet-serializations").UseFileName(packetsOfType.Key.Name).DisableDiff()
+                .AutoVerify(includeBuildServer: !stable);
+        }
+    }
+
+    private static Binder<IPacket> RuntimeBinderOf(IPacket p) => RuntimeBinderOf(p.GetType());
+    private static Binder<IPacket> RuntimeBinderOf(Type type) => (PacketBuffer buf, ref IPacket? packet) =>
+    {
+        // Normally packets are structs, so they can't be null, but here we are using them dynamically, so we need to
+        // initialize them.
+        packet ??= (IPacket)Activator.CreateInstance(type)!;
+        packet.Bind(buf);
+    };
+}

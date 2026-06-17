@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using HarmonyLib;
 using Multiplayer.API;
 using Multiplayer.Common;
@@ -84,6 +86,45 @@ namespace Multiplayer.Client
                     worker.Bind(ref color.a);
                 }
             },
+            {
+                (ByteWriter data, FloatMenuContext context) =>
+                {
+                    data.MpContext().map = context.map;
+
+                    WriteSync(data, context.allSelectedPawns);
+                    WriteSync(data, context.clickPosition);
+                    WriteSync(data, context.cachedClickedCell);
+                    WriteSync(data, context.cachedClickedThings);
+                    WriteSync(data, context.cachedClickedRoom);
+                    WriteSync(data, context.cachedClickedZone);
+                },
+                (ByteReader reader) =>
+                {
+                    var context = new FloatMenuContext(ReadSync<List<Pawn>>(reader), ReadSync<Vector3>(reader), reader.MpContext().map)
+                    {
+                        cachedClickedCell = ReadSync<IntVec3>(reader),
+                        cachedClickedThings = ReadSync<List<Thing>>(reader),
+                        cachedClickedRoom = ReadSync<Room>(reader),
+                        cachedClickedZone = ReadSync<Zone>(reader)
+                    };
+
+                    context.cachedClickedPawns = context.cachedClickedThings.OfType<Pawn>().ToList();
+
+                    return context;
+                }
+            },
+            {
+                (ByteWriter data, AcceptanceReport report) =>
+                {
+                    data.WriteBool(report.acceptedInt);
+                    data.WriteString(report.reasonTextInt);
+                },
+                (ByteReader data) => new AcceptanceReport
+                {
+                    acceptedInt = data.ReadBool(),
+                    reasonTextInt = data.ReadStringNullable()
+                }
+            },
             #endregion
 
             #region Unity
@@ -155,6 +196,14 @@ namespace Multiplayer.Client
                     sync.Bind(ref vec.z);
                 }
             },
+            {
+                (ByteWriter data, CellIndices cellIndices) =>
+                {
+                    data.WriteInt32(cellIndices.sizeX);
+                    data.WriteInt32(cellIndices.sizeZ);
+                },
+                (ByteReader data) => new CellIndices(data.ReadInt32(), data.ReadInt32())
+            }
             #endregion
         };
     }

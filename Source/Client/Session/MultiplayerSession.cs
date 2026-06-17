@@ -1,16 +1,15 @@
-using LiteNetLib;
-using Multiplayer.Client.Networking;
-using Multiplayer.Common;
-using RimWorld;
-using Steamworks;
-using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using LudeonTK;
+using Multiplayer.Client.Networking;
 using Multiplayer.Client.Util;
+using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
+using RimWorld;
+using Steamworks;
 using UnityEngine;
 using Verse;
 using Verse.Sound;
-using Random = System.Random;
 
 namespace Multiplayer.Client
 {
@@ -24,7 +23,6 @@ namespace Multiplayer.Client
         public int remoteSentCmds;
 
         public ConnectionBase client;
-        public NetManager netClient;
         public PacketLogWindow writerLog = new(true);
         public PacketLogWindow readerLog = new(false);
         public int myFactionId;
@@ -34,8 +32,6 @@ namespace Multiplayer.Client
         public PlayerCursors playerCursors = new();
         public int autosaveCounter;
         public float? lastSaveAt;
-        public string desyncTracesFromHost;
-        public List<ClientSyncOpinion> initialOpinions = new();
 
         public bool replay;
         public int replayTimerStart = -1;
@@ -43,8 +39,6 @@ namespace Multiplayer.Client
         public bool showTimeline;
 
         public bool desynced;
-
-        public SessionDisconnectInfo disconnectInfo;
 
         public List<CSteamID> pendingSteam = new();
         public List<CSteamID> knownUsers = new();
@@ -54,14 +48,14 @@ namespace Multiplayer.Client
         public bool hasUnread;
         public bool ghostModeCheckbox;
 
-        public ServerSettings localServerSettings;
-
         public Process arbiter;
         public bool ArbiterPlaying => players.Any(p => p.type == PlayerType.Arbiter && p.status == PlayerStatus.Playing);
 
-        public string address;
-        public int port;
-        public CSteamID? steamHost;
+        public IConnector connector;
+        public bool isStandaloneServer;
+        public float autosaveInterval;
+        public AutosaveUnit autosaveUnit;
+        public bool ConnectedToStandaloneServer => client != null && isStandaloneServer;
 
         public void Stop()
         {
@@ -71,8 +65,6 @@ namespace Multiplayer.Client
                 client.ChangeState(ConnectionStateEnum.Disconnected);
             }
 
-            netClient?.Stop();
-
             if (arbiter != null)
             {
                 arbiter.TryKill();
@@ -80,17 +72,11 @@ namespace Multiplayer.Client
             }
         }
 
-        public PlayerInfo GetPlayerInfo(int id)
-        {
-            for (int i = 0; i < players.Count; i++)
-                if (players[i].id == id)
-                    return players[i];
-            return null;
-        }
+        public PlayerInfo GetPlayerInfo(int id) => players.FirstOrDefault(p => p.id == id);
 
-        public void AddMsg(string msg, bool notify = true)
+        public void AddMsg(string msg, bool notify = true, bool rawMessage = false)
         {
-            AddMsg(new ChatMsg_Text(msg), notify);
+            AddMsg(new ChatMsg_Text(msg, rawMessage), notify);
         }
 
         public void AddMsg(ChatMsg msg, bool notify = true)
@@ -114,92 +100,21 @@ namespace Multiplayer.Client
             SoundDefOf.PageChange.PlayOneShotOnCamera();
         }
 
-        public void ProcessDisconnectPacket(MpDisconnectReason reason, byte[] data)
-        {
-            var reader = new ByteReader(data);
-            string titleKey = null;
-            string descKey = null;
-
-            if (reason == MpDisconnectReason.GenericKeyed) titleKey = reader.ReadString();
-
-            if (reason == MpDisconnectReason.Protocol)
-            {
-                titleKey = "MpWrongProtocol";
-
-                string strVersion = reader.ReadString();
-                int proto = reader.ReadInt32();
-
-                disconnectInfo.wideWindow = true;
-                disconnectInfo.descTranslated = "MpWrongMultiplayerVersionDesc".Translate(strVersion, proto, MpVersion.Version, MpVersion.Protocol);
-
-                if (proto < MpVersion.Protocol)
-                    disconnectInfo.descTranslated += "\n" + "MpWrongVersionUpdateInfoHost".Translate();
-                else
-                    disconnectInfo.descTranslated += "\n" + "MpWrongVersionUpdateInfo".Translate();
-            }
-
-            if (reason == MpDisconnectReason.ConnectingFailed)
-            {
-                var netReason = (DisconnectReason)reader.ReadByte();
-
-                disconnectInfo.titleTranslated =
-                    netReason == DisconnectReason.ConnectionFailed ?
-                    "MpConnectionFailed".Translate() :
-                    "MpConnectionFailedWithInfo".Translate(netReason.ToString().CamelSpace().ToLowerInvariant());
-            }
-
-            if (reason == MpDisconnectReason.NetFailed)
-            {
-                var netReason = (DisconnectReason)reader.ReadByte();
-
-                disconnectInfo.titleTranslated =
-                    "MpDisconnectedWithInfo".Translate(netReason.ToString().CamelSpace().ToLowerInvariant());
-            }
-
-            if (reason == MpDisconnectReason.UsernameAlreadyOnline)
-            {
-                titleKey = "MpInvalidUsernameAlreadyPlaying";
-                descKey = "MpChangeUsernameInfo";
-
-                var newName = Multiplayer.username.Substring(0, Math.Min(Multiplayer.username.Length, MultiplayerServer.MaxUsernameLength - 3));
-                newName += new Random().Next(1000);
-
-                disconnectInfo.specialButtonTranslated = "MpConnectAsUsername".Translate(newName);
-                disconnectInfo.specialButtonAction = () => Reconnect(newName);
-            }
-
-            if (reason == MpDisconnectReason.UsernameLength) { titleKey = "MpInvalidUsernameLength"; descKey = "MpChangeUsernameInfo"; }
-            if (reason == MpDisconnectReason.UsernameChars) { titleKey = "MpInvalidUsernameChars"; descKey = "MpChangeUsernameInfo"; }
-            if (reason == MpDisconnectReason.ServerClosed) titleKey = "MpServerClosed";
-            if (reason == MpDisconnectReason.ServerFull) titleKey = "MpServerFull";
-            if (reason == MpDisconnectReason.ServerStarting) titleKey = "MpDisconnectServerStarting";
-            if (reason == MpDisconnectReason.Kick) titleKey = "MpKicked";
-            if (reason == MpDisconnectReason.ServerPacketRead) descKey = "MpPacketErrorRemote";
-            if (reason == MpDisconnectReason.BadGamePassword) descKey = "MpBadGamePassword";
-
-            disconnectInfo.titleTranslated ??= titleKey?.Translate();
-            disconnectInfo.descTranslated ??= descKey?.Translate();
-        }
-
         public void Reconnect(string username)
         {
             Multiplayer.username = username;
-
-            if (steamHost is { } host)
-                ClientUtil.TrySteamConnectWithWindow(host);
-            else
-                ClientUtil.TryConnectWithWindow(address, port);
+            ClientUtil.TryConnectWithWindow(connector);
         }
 
         public void Connected()
         {
         }
 
-        public void Disconnected()
+        public void Disconnected(SessionDisconnectInfo info)
         {
             MpUI.ClearWindowStack();
 
-            Find.WindowStack.Add(new DisconnectedWindow(disconnectInfo)
+            Find.WindowStack.Add(new DisconnectedWindow(info)
             {
                 returnToServerBrowser = Multiplayer.Client?.State != ConnectionStateEnum.ClientPlaying
             });
@@ -216,6 +131,7 @@ namespace Multiplayer.Client
                 TickPatch.tickUntil = remoteTickUntil;
         }
 
+        [TweakValue("Multiplayer")] public static bool consistentCommandOrder = true;
         public void ScheduleCommand(ScheduledCommand cmd)
         {
             MpLog.Debug(cmd.ToString());
@@ -223,10 +139,12 @@ namespace Multiplayer.Client
 
             if (Current.ProgramState != ProgramState.Playing) return;
 
-            if (cmd.mapId == ScheduledCommand.Global)
-                Multiplayer.AsyncWorldTime.cmds.Enqueue(cmd);
+            // Minimal code impact fix for #733. Having all the commands be added to a single queue gets rid of the
+            // out-of-order execution problem.
+            if (cmd.mapId == ScheduledCommand.Global || consistentCommandOrder)
+                Multiplayer.AsyncWorldTime.Cmds.Enqueue(cmd);
             else
-                cmd.GetMap()?.AsyncTime().cmds.Enqueue(cmd);
+                cmd.GetMap()?.AsyncTime().Cmds.Enqueue(cmd);
         }
 
         public void Update()

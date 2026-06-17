@@ -1,111 +1,101 @@
 using System.Collections.Generic;
+using System.Linq;
 using HarmonyLib;
 using Multiplayer.Client.Networking;
 using Multiplayer.Common;
-using System.Linq;
+using Multiplayer.Common.Networking.Packet;
 using RimWorld;
 using Verse;
 
 namespace Multiplayer.Client
 {
-    public class ClientJoiningState : ClientBaseState
+    [PacketHandlerClass(inheritHandlers: false)]
+    public class ClientJoiningState(ConnectionBase connection, string username) : ClientBaseState(connection)
     {
-        public ClientJoiningState(ConnectionBase connection) : base(connection)
-        {
-        }
+        private BootstrapServerState? bootstrapState;
+
+        [TypedPacketHandler]
+        public new void HandleDisconnected(ServerDisconnectPacket packet) => base.HandleDisconnected(packet);
+
+        [TypedPacketHandler]
+        public void HandleBootstrap(ServerBootstrapPacket packet) =>
+            bootstrapState = BootstrapServerState.FromPacket(packet);
 
         public override void StartState()
         {
-            connection.Send(Packets.Client_Protocol, MpVersion.Protocol);
+            connection.Send(ClientProtocolPacket.Current());
             ConnectionStatusListeners.TryNotifyAll_Connected();
         }
 
-        [PacketHandler(Packets.Server_ProtocolOk)]
-        public void HandleProtocolOk(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleProtocolOk(ServerProtocolOkPacket packet)
         {
-            bool hasPassword = data.ReadBool();
+            Multiplayer.session.isStandaloneServer = packet.isStandaloneServer;
+            Multiplayer.session.autosaveInterval = packet.autosaveInterval;
+            Multiplayer.session.autosaveUnit = packet.autosaveUnit;
 
-            if (hasPassword)
+            if (packet.hasPassword)
             {
                 // Delay showing the window for better UX
-                OnMainThread.Schedule(() => Find.WindowStack.Add(new GamePasswordWindow
+                OnMainThread.Schedule(() => Find.WindowStack.Add(new GamePasswordWindow(username)
                 {
                     returnToServerBrowser = Find.WindowStack.WindowOfType<BaseConnectingWindow>().returnToServerBrowser
                 }), 0.3f);
             }
             else
             {
-                connection.Send(Packets.Client_Username, Multiplayer.username);
+                connection.Send(new ClientUsernamePacket(username));
             }
         }
 
-        [PacketHandler(Packets.Server_InitDataRequest)]
-        public void HandleInitDataRequest(ByteReader data)
-        {
-            var includeConfigs = data.ReadBool();
-            connection.SendFragmented(Packets.Client_InitData, PackInitData(includeConfigs));
-        }
+        [TypedPacketHandler]
+        public void HandleInitDataRequest(ServerInitDataRequestPacket packet) =>
+            connection.SendFragmented(CreateInitDataPacket(packet.includeConfigs).Serialize());
 
-        public static byte[] PackInitData(bool includeConfigs)
+        public static ClientInitDataPacket CreateInitDataPacket(bool includeConfigs) => new()
         {
-            return ServerInitData.Serialize(new ServerInitData(
-                JoinData.WriteServerData(includeConfigs),
-                VersionControl.CurrentVersionString,
-                Sync.handlers.Where(h => h.debugOnly).Select(h => h.syncId).ToHashSet(),
-                Sync.handlers.Where(h => h.hostOnly).Select(h => h.syncId).ToHashSet(),
-                (MultiplayerData.modCtorRoundMode, MultiplayerData.staticCtorRoundMode),
-                new Dictionary<string, DefInfo>(MultiplayerData.localDefInfos)
-            ));
-        }
+            rwVersion = VersionControl.CurrentVersionString,
+            debugOnlySyncCmds = Sync.handlers.Where(h => h.debugOnly).Select(h => h.syncId).ToHashSet().ToArray(),
+            hostOnlySyncCmds = Sync.handlers.Where(h => h.hostOnly).Select(h => h.syncId).ToHashSet().ToArray(),
+            modCtorRoundMode = MultiplayerData.modCtorRoundMode,
+            staticCtorRoundMode = MultiplayerData.staticCtorRoundMode,
+            defInfos = MultiplayerData.localDefInfos
+                .Select(kv => new KeyedDefInfo { name = kv.Key, count = kv.Value.count, hash = kv.Value.hash })
+                .ToArray(),
+            includeConfigs = includeConfigs,
+            Mods = JoinData.WriteServerData(includeConfigs)
+        };
 
         [PacketHandler(Packets.Server_UsernameOk)]
-        public void HandleUsernameOk(ByteReader data)
-        {
-            var writer = new ByteWriter();
-
-            writer.WriteInt32((int)MultiplayerData.modCtorRoundMode);
-            writer.WriteInt32((int)MultiplayerData.staticCtorRoundMode);
-            writer.WriteInt32(MultiplayerData.localDefInfos.Count);
-
-            foreach (var kv in MultiplayerData.localDefInfos)
+        public void HandleUsernameOk(ByteReader data) =>
+            connection.SendFragmented(new ClientJoinDataPacket
             {
-                writer.WriteString(kv.Key);
-                writer.WriteInt32(kv.Value.count);
-                writer.WriteInt32(kv.Value.hash);
-            }
+                modCtorRoundMode = MultiplayerData.modCtorRoundMode,
+                staticCtorRoundMode = MultiplayerData.staticCtorRoundMode,
+                defInfos = MultiplayerData.localDefInfos
+                    .Select(kv => new KeyedDefInfo { name = kv.Key, count = kv.Value.count, hash = kv.Value.hash })
+                    .ToArray()
+            }.Serialize());
 
-            connection.SendFragmented(Packets.Client_JoinData, writer.ToArray());
-        }
-
-        [PacketHandler(Packets.Server_JoinData)]
-        [IsFragmented]
-        public void HandleJoinData(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleJoinData(ServerJoinDataPacket packet)
         {
-            Multiplayer.session.gameName = data.ReadString();
-            Multiplayer.session.playerId = data.ReadInt32();
-
-            var remoteInfo = new RemoteData
-            {
-                remoteRwVersion = data.ReadString(),
-                remoteMpVersion = data.ReadString(),
-                remoteAddress = Multiplayer.session.address,
-                remotePort = Multiplayer.session.port,
-                remoteSteamHost = Multiplayer.session.steamHost
-            };
+            Multiplayer.session.gameName = packet.gameName;
+            Multiplayer.session.playerId = packet.playerId;
 
             var defDiff = false;
-            var defsData = new ByteReader(data.ReadPrefixedBytes());
-
+            var defStatusMap = new Dictionary<DefInfo, DefCheckStatus>();
+            var i = 0;
             foreach (var local in MultiplayerData.localDefInfos)
             {
-                var status = (DefCheckStatus)defsData.ReadByte();
-                local.Value.status = status;
+                var status = packet.defStatus[i++];
+                defStatusMap.Add(local.Value, status);
 
                 if (status != DefCheckStatus.Ok)
                     defDiff = true;
             }
 
-            JoinData.ReadServerData(data.ReadPrefixedBytes(), remoteInfo);
+            var remoteInfo = RemoteData.FromNet(packet);
 
             // Delay showing the window for better UX
             OnMainThread.Schedule(Complete, 0.3f);
@@ -122,17 +112,36 @@ namespace Multiplayer.Client
                     Multiplayer.StopMultiplayerAndClearAllWindows();
 
                 var defDiffStr = "\n\n" + MultiplayerData.localDefInfos
-                    .Where(kv => kv.Value.status != DefCheckStatus.Ok)
+                    .Select(kv => (name: kv.Key, def: kv.Value, status: defStatusMap[kv.Value]))
+                    .Where(kv => kv.status != DefCheckStatus.Ok)
                     .Take(10)
-                    .Join(kv => $"{kv.Key}: {kv.Value.status}", "\n");
+                    .Join(kv => $"{kv.name}: {kv.status}", "\n");
 
-                Find.WindowStack.Add(new JoinDataWindow(remoteInfo){
+                Find.WindowStack.Add(new JoinDataWindow(remoteInfo, Multiplayer.session.connector)
+                {
                     connectAnywayDisabled = defDiff ? "MpMismatchDefsDiff".Translate() + defDiffStr : null,
                     connectAnywayCallback = StartDownloading
                 });
 
                 void StartDownloading()
                 {
+                    if (bootstrapState is { Enabled: true } state)
+                    {
+                        var connectingWindows = Find.WindowStack.Windows
+                            .OfType<BaseConnectingWindow>()
+                            .ToList();
+
+                        foreach (var connectingWindow in connectingWindows)
+                        {
+                            connectingWindow.suppressPostCloseActions = true;
+                            Find.WindowStack.TryRemove(connectingWindow);
+                        }
+
+                        connection.ChangeState(ConnectionStateEnum.ClientBootstrap);
+                        Find.WindowStack.Add(new BootstrapConfiguratorWindow(connection, state));
+                        return;
+                    }
+
                     connection.Send(Packets.Client_WorldRequest);
                     connection.ChangeState(ConnectionStateEnum.ClientLoading);
                 }

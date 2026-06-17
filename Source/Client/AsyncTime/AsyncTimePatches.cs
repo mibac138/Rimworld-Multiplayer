@@ -1,9 +1,10 @@
-using HarmonyLib;
-using RimWorld;
-using RimWorld.Planet;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using HarmonyLib;
+using Multiplayer.Client.Factions;
+using RimWorld;
+using RimWorld.Planet;
 using Verse;
 
 namespace Multiplayer.Client.AsyncTime
@@ -82,7 +83,7 @@ namespace Multiplayer.Client.AsyncTime
             AsyncTimeComp comp = t.Map.AsyncTime();
             TickerType tickerType = t.def.tickerType;
 
-            if (tickerType == TickerType.Normal)
+            if (t is IThingHolder || tickerType == TickerType.Normal)
                 comp.tickListNormal.RegisterThing(t);
             else if (tickerType == TickerType.Rare)
                 comp.tickListRare.RegisterThing(t);
@@ -130,7 +131,7 @@ namespace Multiplayer.Client.AsyncTime
         {
             if (PreDrawCalcMarker.calculating == null) return;
             if (Multiplayer.Client == null) return;
-            if (WorldRendererUtility.WorldRenderedNow) return;
+            if (WorldRendererUtility.WorldSelected) return;
 
             var map = PreDrawCalcMarker.calculating.Map ?? Find.CurrentMap;
             var asyncTime = map.AsyncTime();
@@ -146,7 +147,8 @@ namespace Multiplayer.Client.AsyncTime
         static void Postfix(ref bool __result)
         {
             if (Multiplayer.Client == null) return;
-            if (WorldRendererUtility.WorldRenderedNow) return;
+            if (WorldRendererUtility.WorldSelected) return;
+            if (FactionCreator.generatingMap) return;
 
             var asyncTime = Find.CurrentMap.AsyncTime();
             var timeSpeed = Multiplayer.IsReplay ? TickPatch.replayTimeSpeed : asyncTime.DesiredTimeSpeed;
@@ -176,9 +178,9 @@ namespace Multiplayer.Client.AsyncTime
         {
             foreach (var inst in insts)
             {
-                if (inst.operand == AccessTools.PropertyGetter(typeof(Prefs), nameof(Prefs.AutomaticPauseMode)))
+                if (inst.operand as MethodInfo == AccessTools.PropertyGetter(typeof(Prefs), nameof(Prefs.AutomaticPauseMode)))
                     inst.operand = AccessTools.Method(typeof(ReceiveLetterPause), nameof(AutomaticPauseMode));
-                else if (inst.operand == AccessTools.Method(typeof(TickManager), nameof(TickManager.Pause)))
+                else if (inst.operand as MethodInfo == AccessTools.Method(typeof(TickManager), nameof(TickManager.Pause)))
                     inst.operand = AccessTools.Method(typeof(ReceiveLetterPause), nameof(PauseOnLetter));
 
                 yield return inst;
@@ -188,7 +190,7 @@ namespace Multiplayer.Client.AsyncTime
         private static AutomaticPauseMode AutomaticPauseMode()
         {
             return Multiplayer.Client != null
-                ? (AutomaticPauseMode) Multiplayer.GameComp.pauseOnLetter
+                ? (AutomaticPauseMode)Multiplayer.GameComp.pauseOnLetter
                 : Prefs.AutomaticPauseMode;
         }
 
@@ -203,7 +205,7 @@ namespace Multiplayer.Client.AsyncTime
             if (Multiplayer.GameComp.asyncTime)
             {
                 var tickable = (ITickable)Multiplayer.MapContext.AsyncTime() ?? Multiplayer.AsyncWorldTime;
-                tickable.SetDesiredTimeSpeed(TimeSpeed.Paused);
+                tickable.DesiredTimeSpeed = TimeSpeed.Paused;
                 Multiplayer.GameComp.ResetAllTimeVotes(tickable.TickableId);
             }
             else

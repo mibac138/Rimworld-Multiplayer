@@ -1,12 +1,11 @@
 ﻿using System;
-using LiteNetLib;
 
 namespace Multiplayer.Common
 {
-    public class ServerLog : INetLogger
+    public static class ServerLog
     {
-        public static Action<string> info;
-        public static Action<string> error;
+        public static Action<string>? info;
+        public static Action<string>? error;
         public static bool detailEnabled;
         public static bool verboseEnabled;
 
@@ -36,14 +35,6 @@ namespace Multiplayer.Common
         {
             if (verboseEnabled)
                 Console.WriteLine($"(Verbose) {s}");
-        }
-
-        public void WriteNet(NetLogLevel level, string str, params object[] args)
-        {
-            if (level == NetLogLevel.Error)
-                Error(string.Format(str, args));
-            else
-                Log(string.Format(str, args));
         }
     }
 }

@@ -1,12 +1,14 @@
-using LiteNetLib;
-using Multiplayer.Common;
-using RimWorld;
-using Steamworks;
 using System;
 using System.Collections.Generic;
 using System.Text;
+using LiteNetLib;
 using Multiplayer.Client.Factions;
+using Multiplayer.Client.Networking;
 using Multiplayer.Client.Util;
+using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
+using RimWorld;
+using Steamworks;
 using UnityEngine;
 using Verse;
 
@@ -118,6 +120,15 @@ namespace Multiplayer.Client
             Widgets.Label(inRect, Multiplayer.session.gameName);
             inRect.yMin += Text.CalcHeight(Multiplayer.session.gameName, inRect.width) + 10f;
 
+            if (Prefs.DevMode)
+            {
+                var rect = new Rect(inRect).Height(25f).Width(80f);
+                if (Widgets.ButtonText(rect, "Net info"))
+                    Find.WindowStack.Add(new DebugTextWindow(NetInfoText()));
+
+                inRect.yMin += rect.height + 10f;
+            }
+
             DrawList(
                 "MpChatPlayers".Translate(Multiplayer.session.players.Count),
                 Multiplayer.session.players,
@@ -153,7 +164,7 @@ namespace Multiplayer.Client
                 SteamFriends.GetFriendPersonaName,
                 ref inRect,
                 ref steamScroll,
-                AcceptSteamPlayer,
+                SteamIntegration.AcceptPlayerJoinRequest,
                 true,
                 "MpSteamAcceptDesc".Translate()
             );
@@ -171,14 +182,6 @@ namespace Multiplayer.Client
                     //new FloatMenuOption("MpSeeModList".Translate(), () => DefMismatchWindow.ShowModList(Multiplayer.session.mods))
                 }));
             }
-        }
-
-        private void AcceptSteamPlayer(CSteamID id)
-        {
-            SteamNetworking.AcceptP2PSessionWithUser(id);
-            Multiplayer.session.pendingSteam.Remove(id);
-
-            Messages.Message("MpSteamAccepted".Translate(), MessageTypeDefOf.PositiveEvent, false);
         }
 
         private Color GetColor(PlayerStatus status)
@@ -285,8 +288,8 @@ namespace Multiplayer.Client
 
             foreach (ChatMsg msg in Multiplayer.session.messages)
             {
-                float height = Text.CalcHeight(msg.Msg, width - 20f);
-                float textWidth = Text.CalcSize(msg.Msg).x + 15;
+                CalculateMessageSize(msg, width, out var height, out var textWidth);
+
                 Rect msgRect = new Rect(20f, yPos, width - 20f, height);
 
                 if (Mouse.IsOver(msgRect))
@@ -307,7 +310,7 @@ namespace Multiplayer.Client
                     GUI.color = new Color(0.8f, 0.8f, 1);
 
                 GUI.SetNextControlName("chat_msg_" + i++);
-                Widgets.TextArea(msgRect, msg.Msg, true);
+                DrawMessageTextArea(msgRect, msg);
 
                 if (mouseOver && msg.Clickable)
                 {
@@ -356,12 +359,10 @@ namespace Multiplayer.Client
 
             if (currentMsg.NullOrEmpty()) return;
 
-            if (MpVersion.IsDebug && currentMsg == "/netinfo")
-                Find.WindowStack.Add(new DebugTextWindow(NetInfoText()));
-            else if (Multiplayer.Client == null)
+            if (Multiplayer.Client == null)
                 Multiplayer.session.AddMsg(Multiplayer.username + ": " + currentMsg);
             else
-                Multiplayer.Client.Send(Packets.Client_Chat, currentMsg);
+                Multiplayer.Client.Send(ClientChatPacket.Create(currentMsg, Multiplayer.settings.helpOnlyUsableCommands));
 
             currentMsg = "";
         }
@@ -372,29 +373,20 @@ namespace Multiplayer.Client
 
             var text = new StringBuilder();
 
-            void LogNetData(string name, NetStatistics stats)
+            if (Multiplayer.Client is ClientLiteNetConnection conn)
             {
-                text.AppendLine(name);
-                text.AppendLine($"Bytes received: {stats.BytesReceived}");
-                text.AppendLine($"Bytes sent: {stats.BytesSent}");
-                text.AppendLine($"Packets received: {stats.PacketsReceived}");
-                text.AppendLine($"Packets sent: {stats.PacketsSent}");
-                text.AppendLine($"Packet loss: {stats.PacketLoss}");
-                text.AppendLine($"Packet loss percent: {stats.PacketLossPercent}");
+                text.AppendLine("Client");
+                text.AppendLine(conn.peer.Statistics.ToDebugString());
                 text.AppendLine();
             }
 
-            var netClient = Multiplayer.session.netClient;
-            if (netClient != null)
-                LogNetData("Client", netClient.Statistics);
-
             if (Multiplayer.LocalServer != null)
             {
-                if (Multiplayer.LocalServer.liteNet.lanManager != null)
-                    LogNetData("Lan Server", Multiplayer.LocalServer.liteNet.lanManager.Statistics);
-
-                //if (Multiplayer.LocalServer.net.netManager != null)
-                //    LogNetData("Net Server", Multiplayer.LocalServer.net.netManager.Statistics);
+                foreach (var man in Multiplayer.LocalServer.netManagers)
+                {
+                    text.AppendLine(man.GetDiagnosticsName());
+                    text.AppendLine(man.GetDiagnosticsInfo() ?? "<no info>");
+                }
 
                 // todo thread problems?
                 // foreach (var p in Multiplayer.LocalServer.players.ToList())
@@ -413,14 +405,17 @@ namespace Multiplayer.Client
                     text.AppendLine($"Connecting: {state.m_bConnecting}");
                     text.AppendLine($"Error: {state.m_eP2PSessionError}");
                     text.AppendLine($"Using relay: {state.m_bUsingRelay}");
-                    text.AppendLine($"Bytes to send: {state.m_nBytesQueuedForSend}");
-                    text.AppendLine($"Packets to send: {state.m_nPacketsQueuedForSend}");
-                    text.AppendLine($"Remote IP: {state.m_nRemoteIP}");
-                    text.AppendLine($"Remote port: {state.m_nRemotePort}");
+                    text.AppendLine($"Send queue: {state.m_nBytesQueuedForSend}B  {state.m_nPacketsQueuedForSend} packets");
+                    text.AppendLine($"Remote IP: {state.m_nRemoteIP}:{state.m_nRemotePort}");
                 }
                 else
                 {
                     text.AppendLine("No connection");
+                }
+
+                foreach (var pending in Multiplayer.session.pendingSteam)
+                {
+                    text.AppendLine($"Steam pending {pending}:{SteamFriends.GetFriendPersonaName(remote)}");
                 }
 
                 text.AppendLine();
@@ -432,6 +427,33 @@ namespace Multiplayer.Client
         public void OnChatReceived()
         {
             chatScroll.y = messagesHeight;
+        }
+
+        private static void CalculateMessageSize(ChatMsg msg, float width, out float height, out float textWidth)
+        {
+            var style = msg.RawMessage ? RawTextAreaStyle() : Text.CurTextAreaReadOnlyStyle;
+            var content = new GUIContent(msg.Msg);
+            height = style.CalcHeight(content, width - 20f);
+            textWidth = style.CalcSize(content).x + 15;
+        }
+
+        private static void DrawMessageTextArea(Rect rect, ChatMsg msg)
+        {
+            if (!msg.RawMessage)
+            {
+                Widgets.TextArea(rect, msg.Msg, true);
+                return;
+            }
+
+            GUI.Label(rect, msg.Msg, RawTextAreaStyle());
+        }
+
+        private static GUIStyle RawTextAreaStyle()
+        {
+            return new GUIStyle(Text.CurTextAreaReadOnlyStyle)
+            {
+                richText = false
+            };
         }
 
         public override void PostClose()
@@ -479,6 +501,7 @@ namespace Multiplayer.Client
     public abstract class ChatMsg
     {
         public virtual bool Clickable => false;
+        public virtual bool RawMessage => false;
         public abstract string Msg { get; }
         public virtual DateTime TimeStamp { get; }
 
@@ -493,10 +516,12 @@ namespace Multiplayer.Client
     public class ChatMsg_Text : ChatMsg
     {
         public override string Msg { get; }
+        public override bool RawMessage { get; }
 
-        public ChatMsg_Text(string msg)
+        public ChatMsg_Text(string msg, bool rawMessage = false)
         {
             this.Msg = msg;
+            this.RawMessage = rawMessage;
         }
     }
 

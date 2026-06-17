@@ -23,13 +23,14 @@ namespace Multiplayer.Client
             yield return AccessTools.Method(typeof(MapInterface), nameof(MapInterface.MapInterfaceUpdate));
             yield return AccessTools.Method(typeof(AlertsReadout), nameof(AlertsReadout.AlertsReadoutUpdate));
             yield return AccessTools.Method(typeof(SoundRoot), nameof(SoundRoot.Update));
-            yield return AccessTools.Method(typeof(FloatMenuMakerMap), nameof(FloatMenuMakerMap.ChoicesAtFor));
+            yield return AccessTools.Method(typeof(FloatMenuMakerMap), nameof(FloatMenuMakerMap.GetOptions));
+            yield return AccessTools.Method(typeof(Hediff), nameof(Hediff.GetTooltip));
         }
 
         [HarmonyPriority(MpPriority.MpFirst)]
         internal static void Prefix(ref TimeSnapshot? __state)
         {
-            if (Multiplayer.Client == null || WorldRendererUtility.WorldRenderedNow || Find.CurrentMap == null) return;
+            if (Multiplayer.Client == null || WorldRendererUtility.WorldSelected || Find.CurrentMap == null) return;
             __state = TimeSnapshot.GetAndSetFromMap(Find.CurrentMap);
         }
 
@@ -160,6 +161,30 @@ namespace Multiplayer.Client
 
                 return s;
             };
+        }
+    }
+
+    // Patch to remove endless (every tick!) condition duplicates from the condition causers
+    [HarmonyPatch(typeof(CompCauseGameCondition), nameof(CompCauseGameCondition.GetConditionInstance))]
+    public static class Patch_CompCauseGameCondition_GetConditionInstance
+    {
+        public static void Postfix(Map map, CompCauseGameCondition __instance, ref GameCondition __result)
+        {
+            // Sanity and MP checks. We only checking for conditions that are able to stack
+            if (Multiplayer.Client == null
+                    || __instance.Props.preventConditionStacking
+                    || __result != null
+                    || map == null)
+                return;
+
+            // Look for an existing active condition on this map that matches both def and causer
+            var active = map.GameConditionManager.ActiveConditions
+                .FirstOrDefault(c =>
+                    c.def == __instance.Props.conditionDef &&
+                    c.conditionCauser == __instance.parent);
+
+            if (active != null)
+                __result = active;
         }
     }
 

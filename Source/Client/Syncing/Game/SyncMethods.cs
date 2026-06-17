@@ -1,14 +1,16 @@
 using System;
-using HarmonyLib;
-using Multiplayer.API;
-using RimWorld;
-using RimWorld.Planet;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Reflection.Emit;
+using HarmonyLib;
+using Multiplayer.API;
 using Multiplayer.Client.Util;
+using RimWorld;
+using RimWorld.Planet;
 using Verse;
 using Verse.AI;
+using Verse.AI.Group;
 
 namespace Multiplayer.Client
 {
@@ -26,7 +28,6 @@ namespace Multiplayer.Client
             SyncMethod.Register(typeof(Pawn_OutfitTracker), nameof(Pawn_OutfitTracker.CurrentApparelPolicy)).CancelIfAnyArgNull();
             SyncMethod.Register(typeof(Pawn_FoodRestrictionTracker), nameof(Pawn_FoodRestrictionTracker.CurrentFoodPolicy)).CancelIfAnyArgNull();
             SyncMethod.Register(typeof(Pawn_ReadingTracker), nameof(Pawn_ReadingTracker.CurrentPolicy)).CancelIfAnyArgNull();
-            SyncMethod.Register(typeof(Policy), nameof(Policy.RenamableLabel));
             SyncMethod.Register(typeof(Pawn_PlayerSettings), nameof(Pawn_PlayerSettings.AreaRestrictionInPawnCurrentMap));
             SyncMethod.Register(typeof(Pawn_PlayerSettings), nameof(Pawn_PlayerSettings.Master));
             SyncMethod.Register(typeof(Pawn), nameof(Pawn.Name)).ExposeParameter(0)
@@ -42,6 +43,7 @@ namespace Multiplayer.Client
             SyncMethod.Register(typeof(Pawn_GuestTracker), nameof(Pawn_GuestTracker.SetExclusiveInteraction)).CancelIfAnyArgNull();
             SyncMethod.Register(typeof(Pawn_GuestTracker), nameof(Pawn_GuestTracker.ToggleNonExclusiveInteraction)).CancelIfAnyArgNull();
             SyncMethod.Register(typeof(Zone), nameof(Zone.Delete));
+            SyncMethod.Register(typeof(Plan), nameof(Plan.Delete));
             SyncMethod.Register(typeof(BillStack), nameof(BillStack.AddBill)).ExposeParameter(0); // Only used for pasting
             SyncMethod.Register(typeof(BillStack), nameof(BillStack.Delete)).CancelIfAnyArgNull().SetPostInvoke(TryDirtyCurrentPawnTable);
             SyncMethod.Register(typeof(BillStack), nameof(BillStack.Reorder)).CancelIfAnyArgNull();
@@ -51,7 +53,6 @@ namespace Multiplayer.Client
             SyncMethod.Register(typeof(Building_TurretGun), nameof(Building_TurretGun.ExtractShell));
             SyncMethod.Register(typeof(Area), nameof(Area.Invert));
             SyncMethod.Register(typeof(Area), nameof(Area.Delete));
-            SyncMethod.Register(typeof(Area_Allowed), nameof(Area_Allowed.RenamableLabel));
             SyncMethod.Register(typeof(AreaManager), nameof(AreaManager.TryMakeNewAllowed));
             SyncMethod.Register(typeof(MainTabWindow_Research), nameof(MainTabWindow_Research.DoBeginResearch))
                 .TransformTarget(Serializer.SimpleReader(() => new MainTabWindow_Research()));
@@ -66,12 +67,16 @@ namespace Multiplayer.Client
             SyncMethod.Register(typeof(ResearchManager), nameof(ResearchManager.ApplyTechprint)).SetDebugOnly();
 
             SyncMethod.Register(typeof(DrugPolicyDatabase), nameof(DrugPolicyDatabase.MakeNewDrugPolicy));
+            SyncMethod.Register(typeof(DrugPolicyDatabase), nameof(DrugPolicyDatabase.SetDefault));
             SyncMethod.Register(typeof(DrugPolicyDatabase), nameof(DrugPolicyDatabase.TryDelete)).CancelIfAnyArgNull();
             SyncMethod.Register(typeof(OutfitDatabase), nameof(OutfitDatabase.MakeNewOutfit));
+            SyncMethod.Register(typeof(OutfitDatabase), nameof(OutfitDatabase.SetDefault));
             SyncMethod.Register(typeof(OutfitDatabase), nameof(OutfitDatabase.TryDelete)).CancelIfAnyArgNull();
             SyncMethod.Register(typeof(FoodRestrictionDatabase), nameof(FoodRestrictionDatabase.MakeNewFoodRestriction));
+            SyncMethod.Register(typeof(FoodRestrictionDatabase), nameof(FoodRestrictionDatabase.SetDefault));
             SyncMethod.Register(typeof(FoodRestrictionDatabase), nameof(FoodRestrictionDatabase.TryDelete)).CancelIfAnyArgNull();
             SyncMethod.Register(typeof(ReadingPolicyDatabase), nameof(ReadingPolicyDatabase.MakeNewReadingPolicy));
+            SyncMethod.Register(typeof(ReadingPolicyDatabase), nameof(ReadingPolicyDatabase.SetDefault));
             SyncMethod.Register(typeof(ReadingPolicyDatabase), nameof(ReadingPolicyDatabase.TryDelete)).CancelIfAnyArgNull();
 
             SyncMethod.Register(typeof(Building_Bed), nameof(Building_Bed.Medical));
@@ -117,13 +122,14 @@ namespace Multiplayer.Client
             SyncMethod.Register(typeof(Building_SunLamp), nameof(Building_SunLamp.MakeMatchingGrowZone));
             SyncMethod.Register(typeof(Building_ShipComputerCore), nameof(Building_ShipComputerCore.TryLaunch));
             SyncMethod.Register(typeof(CompPower), nameof(CompPower.TryManualReconnect));
-            SyncMethod.Register(typeof(CompTempControl), nameof(CompTempControl.InterfaceChangeTargetTemperature_NewTemp));
+            SyncMethod.Register(typeof(CompTempControl), nameof(CompTempControl.InterfaceChangeTargetTemperature));
             SyncMethod.Lambda(typeof(CompTempControl), nameof(CompTempControl.CompGetGizmosExtra), 2);               // Reset temperature
             SyncMethod.Lambda(typeof(Comp_AtmosphericHeater), nameof(Comp_AtmosphericHeater.CompGetGizmosExtra), 0); // Reset temperature
-            SyncMethod.Register(typeof(CompTransporter), nameof(CompTransporter.CancelLoad), Array.Empty<SyncType>());
+            SyncMethod.Register(typeof(CompTransporter), nameof(CompTransporter.CancelLoad), []);
             SyncMethod.Register(typeof(MapPortal), nameof(MapPortal.CancelLoad));
             SyncMethod.Register(typeof(StorageSettings), nameof(StorageSettings.CopyFrom)).ExposeParameter(0);
-            SyncMethod.Lambda(typeof(Command_SetTargetFuelLevel), nameof(Command_SetTargetFuelLevel.ProcessInput), 2); // Set target fuel level from Dialog_Slider
+            // Set target fuel level from Dialog_Slider. This only handles changing the fuel level for multiple buildings at once (by shift-clicking to select multiple)
+            SyncMethod.Lambda(typeof(Command_SetTargetFuelLevel), nameof(Command_SetTargetFuelLevel.ProcessInput), 2);
             SyncMethod.Register(typeof(ITab_Pawn_Gear), nameof(ITab_Pawn_Gear.InterfaceDrop)).SetContext(SyncContext.MapSelected | SyncContext.QueueOrder_Down).CancelIfAnyArgNull().CancelIfNoSelectedMapObjects();
             SyncMethod.Register(typeof(FoodUtility), nameof(FoodUtility.IngestFromInventoryNow)).SetContext(SyncContext.MapSelected | SyncContext.QueueOrder_Down).CancelIfAnyArgNull().CancelIfNoSelectedMapObjects();
 
@@ -136,7 +142,7 @@ namespace Multiplayer.Client
             SyncMethod.Register(typeof(SettlementAbandonUtility), nameof(SettlementAbandonUtility.Abandon)).CancelIfAnyArgNull();
             SyncMethod.Register(typeof(WorldSelector), nameof(WorldSelector.AutoOrderToTileNow)).CancelIfAnyArgNull();
             SyncMethod.Register(typeof(CaravanMergeUtility), nameof(CaravanMergeUtility.TryMergeSelectedCaravans)).SetContext(SyncContext.WorldSelected);
-            SyncMethod.Register(typeof(PawnBanishUtility), nameof(PawnBanishUtility.Banish_NewTemp)).CancelIfAnyArgNull();
+            SyncMethod.Register(typeof(PawnBanishUtility), nameof(PawnBanishUtility.Banish), [typeof(Pawn), typeof(PlanetTile), typeof(bool)]).CancelIfAnyArgNull();
             SyncMethod.Register(typeof(SettlementUtility), nameof(SettlementUtility.Attack)).CancelIfAnyArgNull();
 
             SyncMethod.Register(typeof(WITab_Caravan_Gear), nameof(WITab_Caravan_Gear.TryEquipDraggedItem)).SetContext(SyncContext.WorldSelected).CancelIfNoSelectedWorldObjects().CancelIfAnyArgNull();
@@ -150,15 +156,31 @@ namespace Multiplayer.Client
 
             {
                 var methods = typeof(ITargetingSource).AllImplementing()
-                    .Except(typeof(CompInteractableRocketswarmLauncher)) // Skip it, as all it does is open another targeter
                     .Where(t => t.Assembly == typeof(Game).Assembly)
+                    .Except(typeof(CompInteractableRocketswarmLauncher)) // Skip it, as all it does is open another targeter
+                    .Except(typeof(CompNociosphere)) // Skip it, as all it does is open another targeter
                     .Select(t => t.GetMethod(nameof(ITargetingSource.OrderForceTarget), AccessTools.allDeclared))
                     .AllNotNull();
 
                 foreach (var method in methods) {
-                    Sync.RegisterSyncMethod(method);
+                    var sync = Sync.RegisterSyncMethod(method);
+
+                    if (method.DeclaringType == typeof(CompTargetable))
+                    {
+                        // Possible errors/bugs if multiple people had targeter open for the same item and synced it (with some delay between each sync).
+                        sync.TransformTarget(Serializer.New(
+                            (CompTargetable comp) => (comp, comp.caster),
+                            x =>
+                            {
+                                x.comp.caster = x.caster;
+                                return x.comp;
+                            }));
+                    }
                 }
             }
+
+            SyncMethod.Register(typeof(CompLaunchable), nameof(CompLaunchable.TryLaunch)).ExposeParameter(1);           // Launch for transport pods and shuttle
+            SyncMethod.Lambda(typeof(CompLaunchable), nameof(CompLaunchable.CompGetGizmosExtra), 3).SetDebugOnly();     // DEV: reset launch cooldown
 
             SyncMethod.Register(typeof(RoyalTitlePermitWorker_DropResources), nameof(RoyalTitlePermitWorker_DropResources.CallResourcesToCaravan));
 
@@ -171,7 +193,7 @@ namespace Multiplayer.Client
             SyncMethod.Register(typeof(MonumentMarker), nameof(MonumentMarker.PlaceBlueprintsSimilarTo)).ExposeParameter(0);
 
             SyncMethod.Register(typeof(TradeRequestComp), nameof(TradeRequestComp.Fulfill)).CancelIfAnyArgNull();
-            SyncMethod.Register(typeof(CompLaunchable), nameof(CompLaunchable.TryLaunch)).ExposeParameter(1);
+            SyncMethod.Register(typeof(CaravanShuttleUtility), nameof(CaravanShuttleUtility.LaunchShuttle)).ExposeParameter(2);     // Launch shuttle from world map
             SyncMethod.Register(typeof(OutfitForcedHandler), nameof(OutfitForcedHandler.Reset));
             SyncMethod.Register(typeof(Pawn_StoryTracker), nameof(Pawn_StoryTracker.Title));
             SyncMethod.Register(typeof(ShipUtility), nameof(ShipUtility.StartupHibernatingParts)).CancelIfAnyArgNull();
@@ -232,8 +254,10 @@ namespace Multiplayer.Client
             SyncMethod.Lambda(typeof(CompDissolution), nameof(CompDissolution.CompGetGizmosExtra), 1).SetDebugOnly(); // Dissolution event until destroyed
             SyncMethod.Lambda(typeof(CompDissolution), nameof(CompDissolution.CompGetGizmosExtra), 2).SetDebugOnly(); // Dissolution progress +25%
             SyncMethod.Lambda(typeof(CompEggContainer), nameof(CompEggContainer.CompGetGizmosExtra), 0).SetDebugOnly(); // Fill with eggs
-            SyncMethod.Lambda(typeof(CompHackable), nameof(CompHackable.CompGetGizmosExtra), 0).SetDebugOnly(); // Hack +10%
-            SyncMethod.Lambda(typeof(CompHackable), nameof(CompHackable.CompGetGizmosExtra), 1).SetDebugOnly(); // Complete hack
+            SyncMethod.Lambda(typeof(CompHackable), nameof(CompHackable.CompGetGizmosExtra), 1);                // Toggle auto hack
+            SyncMethod.Lambda(typeof(CompHackable), nameof(CompHackable.CompGetGizmosExtra), 7).SetDebugOnly(); // DEV: Hack +10%
+            SyncMethod.Lambda(typeof(CompHackable), nameof(CompHackable.CompGetGizmosExtra), 8).SetDebugOnly(); // DEV: Complete hack
+            SyncMethod.Register(typeof(CompHackable), nameof(CompHackable.EndLockout)).SetDebugOnly(); // Dev: Unlock
             SyncMethod.Register(typeof(CompPolluteOverTime), nameof(CompPolluteOverTime.Pollute)).SetDebugOnly();
             SyncMethod.Register(typeof(CompPollutionPump), nameof(CompPollutionPump.Pump)).SetDebugOnly();
             SyncMethod.Lambda(typeof(CompProjectileInterceptor), nameof(CompProjectileInterceptor.CompGetGizmosExtra), 0).SetDebugOnly(); // Reset cooldown
@@ -253,7 +277,8 @@ namespace Multiplayer.Client
             SyncMethod.Lambda(typeof(Pawn), nameof(Pawn.GetGizmos), 3).SetDebugOnly(); // Psychic entropy +20%
             SyncMethod.Lambda(typeof(Pawn), nameof(Pawn.GetGizmos), 6).SetDebugOnly(); // Reset faction permit cooldowns
             SyncMethod.Lambda(typeof(Pawn), nameof(Pawn.GetGizmos), 7).SetDebugOnly(); // Reset try romance cooldown
-            SyncMethod.Register(typeof(CompCanBeDormant), nameof(CompCanBeDormant.WakeUp)).SetDebugOnly();
+            SyncMethod.Register(typeof(CompCanBeDormant), nameof(CompCanBeDormant.WakeUp)).SetDebugOnly(); // Wake up
+            SyncMethod.Register(typeof(CompCanBeDormant), nameof(CompCanBeDormant.ToSleep)).SetDebugOnly(); // Go to sleep
             SyncMethod.Lambda(typeof(Building_Bookcase), nameof(Building_Bookcase.GetGizmos), 0).SetDebugOnly(); // Fill with books
             SyncMethod.Lambda(typeof(Building_WorkTableAutonomous), nameof(Building_WorkTableAutonomous.GetGizmos), 0).SetDebugOnly(); // Forming cycle +25%
             SyncMethod.Lambda(typeof(Building_WorkTableAutonomous), nameof(Building_WorkTableAutonomous.GetGizmos), 1).SetDebugOnly(); // Complete cycle
@@ -268,28 +293,29 @@ namespace Multiplayer.Client
             SyncMethod.Register(typeof(CompPowerBattery), nameof(CompPowerBattery.SetStoredEnergyPct)).SetDebugOnly(); // Set battery to 0/100%
             SyncMethod.Lambda(typeof(CompPowerTrader), nameof(CompPowerTrader.CompGetGizmosExtra), 0).SetDebugOnly(); // Toggle power on/off
             SyncMethod.Lambda(typeof(CompProximityFuse), nameof(CompProximityFuse.CompGetGizmosExtra), 0).SetDebugOnly(); // Trigger
-            SyncMethod.Register(typeof(GameComponent_PsychicRitualManager), nameof(GameComponent_PsychicRitualManager.ClearAllCooldowns)).SetDebugOnly();
             SyncMethod.Lambda(typeof(CompRevenant), nameof(CompRevenant.CompGetGizmosExtra), 0).SetDebugOnly(); // Reset hypnosis cooldown
             SyncMethod.Lambda(typeof(CompRevenant), nameof(CompRevenant.CompGetGizmosExtra), 1).SetDebugOnly(); // Change to wander mode
             SyncMethod.Lambda(typeof(CompRevenant), nameof(CompRevenant.CompGetGizmosExtra), 2).SetDebugOnly(); // Change to sleep mode
             SyncMethod.Lambda(typeof(CompRevenant), nameof(CompRevenant.CompGetGizmosExtra), 3).SetDebugOnly(); // Find target
             SyncMethod.Register(typeof(CompShield), nameof(CompShield.Break)).SetDebugOnly();
             SyncMethod.Lambda(typeof(CompShield), nameof(CompShield.CompGetWornGizmosExtra), 0).SetDebugOnly(); // Reset
-            SyncMethod.Register(typeof(CompSpawnImmortalSubplantsAround), nameof(CompSpawnImmortalSubplantsAround.RespawnCheck)).SetDebugOnly();
+            SyncMethod.Register(typeof(CompSpawnImmortalSubplantsAround), nameof(CompSpawnImmortalSubplantsAround.RespawnCheck)).SetDebugOnly(); // Respawn subplant
             SyncMethod.Lambda(typeof(CompSpawnSubplant), nameof(CompSpawnSubplant.CompGetGizmosExtra), 0).SetDebugOnly(); // Add 100% progress
             SyncMethod.Lambda(typeof(CompVoidStructure), nameof(CompVoidStructure.CompGetGizmosExtra), 0).SetDebugOnly(); // Activate
             SyncMethod.Lambda(typeof(CompObelisk), nameof(CompObelisk.CompGetGizmosExtra), 0).SetDebugOnly(); // Trigger interaction effect
             SyncMethod.Lambda(typeof(Pawn_NeedsTracker), nameof(Pawn_NeedsTracker.GetGizmos), 0).SetDebugOnly(); // +5% mech energy
             SyncMethod.Lambda(typeof(Pawn_NeedsTracker), nameof(Pawn_NeedsTracker.GetGizmos), 1).SetDebugOnly(); // -5% mech energy
-            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 4).SetDebugOnly();  // Cause mental break
-            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 6).SetDebugOnly();  // Make random pawn hungry
-            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 8).SetDebugOnly();  // Kill random pawn
-            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 9).SetDebugOnly();  // Kill all non-slave pawns
-            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 10).SetDebugOnly(); // Harm random pawn
-            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 11).SetDebugOnly(); // Down random pawn
-            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 13).SetDebugOnly(); // Plague on random pawn
-            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 15).SetDebugOnly(); // Teleport to destination
-            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 16).SetDebugOnly(); // +20% psyfocus
+
+            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 4).SetDebugOnly();  // End shuttle cooldown            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 4).SetDebugOnly();  // End shuttle cooldown
+            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 5).SetDebugOnly();  // Cause mental break            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 5).SetDebugOnly();  // Cause mental break
+            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 7).SetDebugOnly();  // Make random pawn hungry            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 7).SetDebugOnly();  // Make random pawn hungry
+            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 9).SetDebugOnly();  // Kill random pawn            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 9).SetDebugOnly();  // Kill random pawn
+            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 10).SetDebugOnly(); // Kill all non-slave pawns            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 10).SetDebugOnly(); // Kill all non-slave pawns
+            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 11).SetDebugOnly(); // Harm random pawn            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 11).SetDebugOnly(); // Harm random pawn
+            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 12).SetDebugOnly(); // Down random pawn            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 12).SetDebugOnly(); // Down random pawn
+            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 14).SetDebugOnly(); // Plague on random pawn            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 14).SetDebugOnly(); // Plague on random pawn
+            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 16).SetDebugOnly(); // Teleport to destination            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 16).SetDebugOnly(); // Teleport to destination
+            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 17).SetDebugOnly(); // +20% psyfocus            SyncMethod.Lambda(typeof(Caravan), nameof(Caravan.GetGizmos), 17).SetDebugOnly(); // +20% psyfocus
             SyncMethod.Register(typeof(Caravan_ForageTracker), nameof(Caravan_ForageTracker.Forage)).SetDebugOnly(); // Dev forage
             SyncMethod.Lambda(typeof(EnterCooldownComp), nameof(EnterCooldownComp.GetGizmos), 0).SetDebugOnly(); // Set enter cooldown to 1 hour
             SyncMethod.Lambda(typeof(EnterCooldownComp), nameof(EnterCooldownComp.GetGizmos), 1).SetDebugOnly(); // Reset enter cooldown
@@ -304,6 +330,16 @@ namespace Multiplayer.Client
             SyncMethod.Lambda(typeof(UnnaturalCorpse), nameof(UnnaturalCorpse.GetGizmos), 3).SetDebugOnly(); // Awake
             SyncMethod.Lambda(typeof(UnnaturalCorpse), nameof(UnnaturalCorpse.GetGizmos), 4).SetDebugOnly(); // Unlock deactivation
             SyncMethod.Lambda(typeof(Thing), nameof(Thing.GetGizmos), 0).SetDebugOnly(); // Extinguish
+            SyncMethod.Lambda(typeof(BookOutcomeDoer_GiveQuest), nameof(BookOutcomeDoer_GiveQuest.GetGizmos), 1).SetDebugOnly(); // Give quest
+            SyncMethod.Register(typeof(Building_GravEngine), nameof(Building_GravEngine.Inspect)).SetDebugOnly(); // Inspect now
+            SyncMethod.Register(typeof(CompAncientVent), nameof(CompAncientVent.DevToggleVent)).SetDebugOnly(); // Toggle vents on map
+            SyncMethod.Lambda(typeof(CompEggLayer), nameof(CompEggLayer.CompGetGizmosExtra), 0); // LayEgg
+            SyncMethod.Register(typeof(CompOrbitalScanner), nameof(CompOrbitalScanner.ReceiveSignal)).SetDebugOnly(); // Find signal
+            SyncMethod.Register(typeof(CompOrbitalScanner), nameof(CompOrbitalScanner.LocateSignal)).SetDebugOnly(); // Locate signal
+            SyncMethod.Register(typeof(CompTerraformer), nameof(CompTerraformer.Convert)).SetDebugOnly(); // Convert
+            SyncMethod.Register(typeof(Crater), nameof(Crater.FillIn)).SetDebugOnly(); // Fill in
+            SyncMethod.Lambda(typeof(WorldObject), nameof(WorldObject.GetGizmos), 1).SetDebugOnly(); // Generate map
+            SyncMethod.Lambda(typeof(PsychicRitualToil_InvokeHorax), nameof(PsychicRitualToil_InvokeHorax.DebugFinishGizmo), 0).SetDebugOnly();
 
             SyncMethod.Register(typeof(Blueprint_Build), nameof(Blueprint_Build.ChangeStyleOfAllSelected)).SetContext(SyncContext.MapSelected).CancelIfNoSelectedMapObjects();
             SyncMethod.Lambda(typeof(CompTurretGun), nameof(CompTurretGun.CompGetGizmosExtra), 1); // Toggle fire at will
@@ -340,8 +376,8 @@ namespace Multiplayer.Client
             SyncMethod.Lambda(typeof(Building_MechCharger), nameof(Building_MechCharger.GetGizmos), 0).SetDebugOnly(); // Waste 100%
             SyncMethod.Lambda(typeof(Building_MechCharger), nameof(Building_MechCharger.GetGizmos), 1).SetDebugOnly(); // Waste 25%
             SyncMethod.Lambda(typeof(Building_MechCharger), nameof(Building_MechCharger.GetGizmos), 2).SetDebugOnly(); // Waste 0%
-            SyncMethod.Register(typeof(Building_MechCharger), nameof(Building_MechCharger.GenerateWastePack)).SetDebugOnly(); // Generate waste, lambdaOrdinal: 3
-            SyncMethod.Lambda(typeof(Building_MechCharger), nameof(Building_MechCharger.GetGizmos), 4).SetDebugOnly(); // Charge 100%
+            SyncMethod.Register(typeof(Building_MechCharger), nameof(Building_MechCharger.GenerateWastePack)).SetDebugOnly();                 // Generate waste
+            SyncMethod.Lambda(typeof(Building_MechCharger), nameof(Building_MechCharger.GetGizmos), 3).SetDebugOnly(); // Charge 100%
             // Gestator
             SyncMethod.Lambda(typeof(Building_MechGestator), nameof(Building_MechGestator.GetGizmos), 0).SetDebugOnly(); // Generate 5 waste
             SyncMethod.Register(typeof(Bill_Mech), nameof(Bill_Mech.ForceCompleteAllCycles)).SetDebugOnly(); // Called from Building_MechGestator.GetGizmos
@@ -355,6 +391,11 @@ namespace Multiplayer.Client
             SyncMethod.Lambda(typeof(CompMechPowerCell), nameof(CompMechPowerCell.CompGetGizmosExtra), 1).SetDebugOnly(); // Power left 100%
             // Repairable
             SyncMethod.Lambda(typeof(CompMechRepairable), nameof(CompMechRepairable.CompGetGizmosExtra), 1); // Toggle auto repair
+            // Ancient mech vat
+            SyncMethod.Register(typeof(CompMechGestatorTank), nameof(CompMechGestatorTank.State)).SetDebugOnly(); // Dev: Add mech and Dev: Remove mech
+            // Mech relay
+            SyncMethod.Register(typeof(CompMechRelay), nameof(CompMechRelay.Deactivate)).SetDebugOnly(); // Deactivate
+            SyncMethod.Lambda(typeof(CompMechRelay), nameof(CompMechRelay.CompGetGizmosExtra), 0).SetDebugOnly(); // Destabilize now
 
             // Atomizer
             SyncMethod.Lambda(typeof(CompAtomizer), nameof(CompAtomizer.CompGetGizmosExtra), 1); // Auto load
@@ -374,6 +415,9 @@ namespace Multiplayer.Client
             SyncMethod.Lambda(typeof(Gene_Deathrest), nameof(Gene_Deathrest.GetGizmos), 3).SetDebugOnly(); // Wake and apply bonuses
             SyncMethod.Lambda(typeof(Gene_Healing), nameof(Gene_Healing.GetGizmos), 0).SetDebugOnly(); // Heal permament wound
             SyncMethod.Lambda(typeof(Gene_PsychicBonding), nameof(Gene_PsychicBonding.GetGizmos), 0).SetDebugOnly(); // Bond to random pawn
+
+            // Outfit stand
+            SyncMethod.Register(typeof(Building_OutfitStand), nameof(Building_OutfitStand.TryDrop));
 
             // Baby feeding
             SyncMethod.Register(typeof(Pawn_MindState), nameof(Pawn_MindState.SetAutofeeder)); // Called from ITab_Pawn_Feeding.GenerateFloatMenuOption
@@ -399,6 +443,13 @@ namespace Multiplayer.Client
             SyncMethod.Register(typeof(HarbingerTree), nameof(HarbingerTree.AddNutrition)).SetDebugOnly();
             SyncMethod.Register(typeof(HarbingerTree), nameof(HarbingerTree.SpawnNewTree)).SetDebugOnly();
             SyncMethod.LocalFunc(typeof(HarbingerTree), nameof(HarbingerTree.GetGizmos), "DelayedSplatter").SetDebugOnly(); // Set blood splatters delay
+            SyncMethod.Register(typeof(CompPlantPreventCutting), nameof(CompPlantPreventCutting.PreventCutting));
+
+            // Entity codex
+            SyncMethod.Register(typeof(EntityCodex), nameof(EntityCodex.SetDiscovered), [typeof(EntityCodexEntryDef), typeof(ThingDef), typeof(Thing)]);
+            SyncMethod.Register(typeof(EntityCodex), nameof(EntityCodex.SetDiscovered), [typeof(List<EntityCodexEntryDef>), typeof(ThingDef), typeof(Thing)]);
+            SyncMethod.Register(typeof(EntityCodex), nameof(EntityCodex.Debug_DiscoverAll)).SetDebugOnly();
+            SyncMethod.Register(typeof(EntityCodex), nameof(EntityCodex.Reset));
 
             // Pawn creep joiner tracker
             SyncMethod.Lambda(typeof(Pawn_CreepJoinerTracker), nameof(Pawn_CreepJoinerTracker.GetGizmos), 0).SetDebugOnly(); // Unlock downside trigger
@@ -407,16 +458,62 @@ namespace Multiplayer.Client
             SyncMethod.Register(typeof(Pawn_CreepJoinerTracker), nameof(Pawn_CreepJoinerTracker.DoRejection)).SetDebugOnly();
 
             // Pits
-            SyncMethod.Register(typeof(PitBurrow), nameof(PitBurrow.Collapse)).SetDebugOnly();
             SyncMethod.Lambda(typeof(PitBurrow), nameof(PitBurrow.GetGizmos), 0).SetDebugOnly(); // Spawn fleshbeast
             SyncMethod.Register(typeof(PitGate), nameof(PitGate.TryFireIncident)).SetDebugOnly(); // Trigger incident with specific point value/with natural point value
-            SyncMethod.Lambda(typeof(PitGate), nameof(PitGate.GetGizmos), 4).SetDebugOnly(); // End cooldown
+            SyncMethod.Lambda(typeof(PitGate), nameof(PitGate.GetGizmos), 3).SetDebugOnly(); // End cooldown
             SyncMethod.Register(typeof(PitGate), nameof(PitGate.BeginCollapsing)).SetDebugOnly();
 
             // Bioferrite harvester
             SyncMethod.Register(typeof(Building_BioferriteHarvester), nameof(Building_BioferriteHarvester.EjectContents)); // Eject contents
             SyncMethod.Lambda(typeof(Building_BioferriteHarvester), nameof(Building_BioferriteHarvester.GetGizmos), 1); // Toggle unload
             SyncMethod.Lambda(typeof(Building_BioferriteHarvester), nameof(Building_BioferriteHarvester.GetGizmos), 3).SetDebugOnly(); // Dev add +1
+
+            SyncMethod.Register(typeof(WorldComponent_GravshipController), nameof(WorldComponent_GravshipController.PlaceGravship));
+            SyncMethod.Register(typeof(WorldComponent_GravshipController), nameof(WorldComponent_GravshipController.AbortLanding)).SetContext(SyncContext.CurrentMap);
+
+            // Outfit stand
+            SyncMethod.Lambda(typeof(Building_OutfitStand), nameof(Building_OutfitStand.GetGizmos), 1); // Order a pawn to equip from a stand
+            SyncMethod.Register(typeof(Building_OutfitStand), nameof(Building_OutfitStand.SetAllowHauling)); // Toggle allow removing apparel
+
+            // Archonexus core
+            // We can't rely on syncing through TryTakeOrderedJob with more than 1 pawn, as all pawns besides the main one
+            // call FloatMenuOptionProvider_DraftedMove.PawnGotoAction, which can also end the current job instead.
+            SyncMethod.Lambda(typeof(Building_ArchonexusCore), nameof(Building_ArchonexusCore.GetMultiSelectFloatMenuOptions), 0).SetContext(SyncContext.MapSelected).CancelIfNoSelectedMapObjects() // Activate with selected pawns.
+                // The method is relying on a temporary state based on the pawns that the player had selected.
+                // The method is using an already processed list of pawns, so we need to run it again with
+                // the same pawns to ensure that the list of pawns is initialized.
+                .SetPreInvoke((x, _) =>
+                {
+                    if (x is not Building_ArchonexusCore core) return;
+                    core.GetMultiSelectFloatMenuOptions(Find.Selector.SelectedPawns).ExecuteEnumerable();
+                })
+                // After syncing and invoking the method, we want to restore the previous state of tmpPawnsCanReach.
+                // Just run the GetMultiSelectFloatMenuOptions method again so the list is populated.
+                .SetPostInvoke((x, _) =>
+                {
+                    if (x is not Building_ArchonexusCore core) return;
+                    core.GetMultiSelectFloatMenuOptions(SyncUtil.prevSelected.OfType<Pawn>()).ExecuteEnumerable();
+                });
+            SyncMethod.Register(typeof(Building_ArchonexusCore), nameof(Building_ArchonexusCore.Activate)).SetDebugOnly(); // Activate archonexus core
+
+            // We can't rely on syncing through TryTakeOrderedJob with more than 1 pawn, as all pawns besides the main one
+            // call FloatMenuOptionProvider_DraftedMove.PawnGotoAction, which can also end the current job instead.
+            SyncMethod.Lambda(typeof(Building_Crate), nameof(Building_Crate.GetMultiSelectFloatMenuOptions), 0).SetContext(SyncContext.MapSelected).CancelIfNoSelectedMapObjects() // Activate with selected pawns.
+                // The method is relying on a temporary state based on the pawns that the player had selected.
+                // The method is using an already processed list of pawns, so we need to run it again with
+                // the same pawns to ensure that the list of pawns is initialized.
+                .SetPreInvoke((x, _) =>
+                {
+                    if (x is not Building_Crate crate) return;
+                    crate.GetMultiSelectFloatMenuOptions(Find.Selector.SelectedPawns).ExecuteEnumerable();
+                })
+                // After syncing and invoking the method, we want to restore the previous state of tmpPawnsCanReach.
+                // Just run the GetMultiSelectFloatMenuOptions method again so the list is populated.
+                .SetPostInvoke((x, _) =>
+                {
+                    if (x is not Building_Crate crate) return;
+                    crate.GetMultiSelectFloatMenuOptions(SyncUtil.prevSelected.OfType<Pawn>()).ExecuteEnumerable();
+                });
 
             // Double ExecuteWhenFinished ensures it'll load after MP Compat late patches,
             // so it will have registered all its sync workers already.
@@ -456,10 +553,19 @@ namespace Multiplayer.Client
         [MpTranspiler(typeof(CompPlantable), nameof(CompPlantable.BeginTargeting), lambdaOrdinal: 0)]
         static IEnumerable<CodeInstruction> CompPlantableTranspiler(IEnumerable<CodeInstruction> insts)
         {
+            // This method can do 3 things:
+            // - Begin targeting
+            // - Display a confirmation dialog, which may plant the plantable
+            // - Start planting immediately
+            // We don't want to sync the first situation.
+            // The second one we want to sync after confirming, which we do already.
+            // Syncing the last one requires either making a prefix to check if all conditions match,
+            // or replacing the interaction of adding a planting target with a synced one (which we do here).
+
             foreach (var inst in insts)
             {
                 // this.plantCells.Add(t.Cell) => CompPlantable_AddCell(t.Cell, this)
-                if (inst.operand == typeof(List<IntVec3>).GetMethod("Add"))
+                if (inst.operand as MethodInfo == typeof(List<IntVec3>).GetMethod("Add"))
                 {
                     // Load this
                     yield return new CodeInstruction(OpCodes.Ldarg_0);
@@ -760,6 +866,74 @@ namespace Multiplayer.Client
                     table.SetDirty();
             }
         }
-    }
+        [HarmonyPatch(typeof(FlyShipLeaving), nameof(FlyShipLeaving.LeaveMap))]
+        static class FlyShipLeaving_LeaveMap_Patch
+        {
+            //When launch transporter, should try to use pawn inside's faction instead of Faction.OfPlayer
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> insts)
+            {
+                var ofPlayerGetter = AccessTools.PropertyGetter(typeof(Faction), nameof(Faction.OfPlayer));
+                var replacement = AccessTools.Method(typeof(FlyShipLeaving_LeaveMap_Patch),
+                    nameof(GetFactionFromContents));
 
+                foreach (var ci in insts)
+                {
+                    if (ci.Calls(ofPlayerGetter))
+                    {
+                        yield return new CodeInstruction(OpCodes.Ldarg_0);
+                        ci.opcode = OpCodes.Call;
+                        ci.operand = replacement;
+                    }
+                    yield return ci;
+                }
+            }
+
+            static Faction GetFactionFromContents(FlyShipLeaving flyShip)
+            {
+                foreach (Thing t in flyShip.Contents.innerContainer)
+                {
+                    Pawn pawn = t as Pawn;
+                    if (pawn?.Faction != null && pawn.Faction.IsPlayer)
+                        return pawn.Faction;
+                }
+                return Faction.OfPlayer; // fallback
+            }
+        }
+
+        [HarmonyPatch(typeof(ITab_ContentsBooks), nameof(ITab_ContentsBooks.DoRow))]
+        static class ITab_ContentsBooks_DoRow_Patch
+        {
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> insts)
+            {
+                var getDirectlyHeldThings = AccessTools.Method(typeof(Building_Bookcase), nameof(Building_Bookcase.GetDirectlyHeldThings));
+                var tryDrop = AccessTools.Method(typeof(ThingOwner), nameof(ThingOwner.TryDrop), new[] { typeof(Thing), typeof(IntVec3), typeof(Map), typeof(ThingPlaceMode), typeof(int), typeof(Thing).MakeByRefType(), typeof(Action<Thing, int>), typeof(Predicate<IntVec3>) });
+                var replacement = AccessTools.Method(typeof(SyncMethods), nameof(SyncBookcaseTryDrop));
+
+                foreach (var ci in insts)
+                {
+                    if (ci.Calls(getDirectlyHeldThings))
+                        continue;
+
+                    if (ci.Calls(tryDrop))
+                        ci.operand = replacement;
+                    yield return ci;
+                }
+            }
+        }
+
+        // Seems can't sync Action & Predicate so have to deduct params
+        // This is enough for bookcase to use but needs update for new situation if needed.
+
+        static bool SyncBookcaseTryDrop(Building_Bookcase bookcase, Thing thing, IntVec3 dropLoc, Map map, ThingPlaceMode mode, int count, out Thing resultingThing, Action<Thing, int> placedAction = null, Predicate<IntVec3> nearPlaceValidator = null)
+        {
+            return DoSyncBookcaseTryDrop(bookcase, thing, dropLoc, map, mode, count, out resultingThing);
+        }
+        [SyncMethod]
+        static bool DoSyncBookcaseTryDrop(Building_Bookcase bookcase, Thing thing, IntVec3 dropLoc, Map map, ThingPlaceMode mode, int count, out Thing resultingThing)
+        {
+            ThingOwner owner = bookcase.GetDirectlyHeldThings();
+            return owner.TryDrop(thing, dropLoc, map, mode, count, out resultingThing,
+               null, null);
+        }
+    }
 }

@@ -1,16 +1,21 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Text;
-
 using HarmonyLib;
 using LudeonTK;
+using Multiplayer.Client.Desyncs;
 using Multiplayer.Client.Util;
+using Multiplayer.Client.Windows;
 using RimWorld;
 using RimWorld.Planet;
+using Steamworks;
 using UnityEngine;
 using Verse;
 using Debug = UnityEngine.Debug;
@@ -19,7 +24,9 @@ namespace Multiplayer.Client
 {
     static class MpDebugActions
     {
-        const string MultiplayerCategory = "Multiplayer";
+        public const string MultiplayerCategory = "Multiplayer";
+        // Actions in this category are not synced and only happen on the client.
+        public const string MultiplayerLocalCategory = "Multiplayer local";
 
         [DebugAction(MultiplayerCategory, actionType = DebugActionType.ToolWorld, allowedGameStates = AllowedGameStates.PlayingOnWorld)]
         public static void SpawnCaravans()
@@ -65,7 +72,7 @@ namespace Multiplayer.Client
                 {
                     Pawn item = PawnGenerator.GeneratePawn(
                         DefDatabase<PawnKindDef>.AllDefs
-                            .Where((PawnKindDef d) => d.RaceProps.Animal && d.RaceProps.wildness < 1f).RandomElement(),
+                            .Where((PawnKindDef d) => d.RaceProps.Animal && d.race.GetStatValueAbstract(StatDefOf.Wildness) < 1f).RandomElement(),
                         Faction.OfPlayer);
                     list.Add(item);
                 }
@@ -124,12 +131,128 @@ namespace Multiplayer.Client
             GenPlace.TryPlaceThing(shuttle, UI.MouseCell(), Find.CurrentMap, ThingPlaceMode.Near);
         }
 
+        [DebugAction(MultiplayerCategory, allowedGameStates = AllowedGameStates.PlayingOnMap)]
+        public static void RegenerateEverythingNowWithTiming()
+        {
+            var drawer = Find.CurrentMap.mapDrawer;
+            Dictionary<Type, long> timing = new();
+
+            void RegenerateEverythingNow()
+            {
+                drawer.EnsureGlobalLayersInitialized();
+
+                for (int i = 0; i < drawer.global.Count; i++)
+                {
+                    MapDrawLayer mapDrawLayer = drawer.global[i];
+                    if (mapDrawLayer.Visible)
+                    {
+                        var stopwatch = Stopwatch.StartNew();
+                        {
+                            mapDrawLayer.Regenerate();
+                            mapDrawLayer.RefreshSubMeshBounds();
+                        }
+                        if (timing.ContainsKey(mapDrawLayer.GetType()))
+                            timing[mapDrawLayer.GetType()] += stopwatch.ElapsedMilliseconds;
+                        else
+                            timing[mapDrawLayer.GetType()] = stopwatch.ElapsedMilliseconds;
+                    }
+                }
+                for (int j = 0; j < drawer.SectionCount.x; j++)
+                {
+                    for (int k = 0; k < drawer.SectionCount.z; k++)
+                    {
+                        RegenerateAllLayers(drawer.sections[j, k]);
+                    }
+                }
+            }
+
+            void RegenerateAllLayers(Section s)
+            {
+                s.bounds = s.CellRect;
+                for (int i = 0; i < s.layers.Count; i++)
+                {
+                    if (!s.layers[i].Visible)
+                    {
+                        continue;
+                    }
+                    try
+                    {
+                        var stopwatch = Stopwatch.StartNew();
+                        {
+                            s.layers[i].Regenerate();
+                            if (s.layers[i].Isnt<SectionLayer_Dynamic>())
+                            {
+                                s.bounds = s.bounds.Encapsulate(s.layers[i].GetBoundaryRect());
+                            }
+                        }
+                        if (timing.ContainsKey(s.layers[i].GetType()))
+                            timing[s.layers[i].GetType()] += stopwatch.ElapsedMilliseconds;
+                        else
+                            timing[s.layers[i].GetType()] = stopwatch.ElapsedMilliseconds;
+                    }
+                    catch (Exception arg)
+                    {
+                        Log.Error($"Could not regenerate layer {s.layers[i].ToStringSafe()}: {arg}");
+                    }
+                }
+                for (int j = 0; j < s.layers.Count; j++)
+                {
+                    s.layers[j].RefreshSubMeshBounds();
+                }
+            }
+
+            // RegenerateEverythingNow();
+            Find.CurrentMap.mapDrawer.WholeMapChanged(~(ulong)MapMeshFlagDefOf.None);
+            Log.Message(timing.ToStringFullContents());
+        }
+
         [DebugAction(MultiplayerCategory, "Save Game", allowedGameStates = AllowedGameStates.Playing)]
         public static void SaveGame()
         {
             Game game = Current.Game;
             byte[] data = ScribeUtil.WriteExposable(game, "game", true);
             File.WriteAllBytes($"game_{Multiplayer.username}.xml", data);
+        }
+
+        [DebugAction(MultiplayerLocalCategory, name = "Trigger desync", allowedGameStates = AllowedGameStates.Playing)]
+        public static void TriggerDesync()
+        {
+            var logItem = StackTraceLogItemRaw.GetFromPool();
+            var trace = logItem.raw;
+            int hash = 0;
+            int depth = DeferredStackTracingImpl.TraceImpl(trace, ref hash);
+
+            Multiplayer.game.asyncWorldTimeComp.randState++;
+            Multiplayer.game.sync.TryAddStackTraceForDesyncLogRaw(logItem, depth, hash);
+        }
+
+        [DebugAction(MultiplayerLocalCategory, name = "Show desync window", allowedGameStates = AllowedGameStates.Playing)]
+        public static void ShowDesync()
+        {
+            Find.WindowStack.Add(new DesyncedWindow(
+                "Debug action",
+                new SaveableDesyncInfo(Multiplayer.game.sync, new ClientSyncOpinion(0), new ClientSyncOpinion(0), 0, true)
+            ));
+        }
+
+        [DebugAction(MultiplayerLocalCategory, name = "Show stack traces", allowedGameStates = AllowedGameStates.Playing)]
+        public static void ShowStackTraces()
+        {
+            var syncCoordinator = Multiplayer.game.sync;
+            var opinions = syncCoordinator.knownClientOpinions;
+            if (opinions.Count == 0)
+            {
+                Log.Message("No opinions available");
+                return;
+            }
+            var stackTrace = opinions[0].GetFormattedStackTracesForRange(-1);
+            Log.Message($"Current opinion stack trace: \n{stackTrace}");
+        }
+
+        [DebugAction(MultiplayerCategory, name = "Show pending player", allowedGameStates = AllowedGameStates.Playing)]
+        public static void ShowPendingPlayer()
+        {
+            PendingPlayerWindow.EnqueueJoinRequest(SteamUser.GetSteamID(), (_, _) => { });
         }
 
         [DebugAction(MultiplayerCategory, "Dump Sync Types", allowedGameStates = AllowedGameStates.Entry)]
@@ -157,6 +280,12 @@ namespace Multiplayer.Client
                     .Join(delimiter: "\n")
                 );
             }
+        }
+
+        [DebugAction(MultiplayerCategory, "Print jitted methods", allowedGameStates = /* all */ AllowedGameStates.Invalid)]
+        public static void PrintJittedMethods()
+        {
+            Log.Message(JittedMethods.GetJittedMethodsString());
         }
 
         [DebugAction(MultiplayerCategory, "Dump Def Types", allowedGameStates = AllowedGameStates.Entry)]
@@ -228,6 +357,27 @@ namespace Multiplayer.Client
         static void MultiplayerMethodCallLogger(MethodBase __originalMethod)
         {
             Debug.Log(__originalMethod.FullDescription());
+        }
+
+        [DebugAction(MultiplayerLocalCategory, "Dump addr info table", allowedGameStates = /* all */ AllowedGameStates.Invalid)]
+        public static void DumpAddrInfoTable()
+        {
+            Log.Message($"Dumping address info table {DeferredStackTracingImpl.hashTable.Entries}");
+            foreach (var addrInfo in DeferredStackTracingImpl.hashTable)
+            {
+                if (addrInfo.nameHash == 0) continue;
+                var normalized = $"`{Native.MethodNameNormalizedFromAddr(addrInfo.addr, true)}`";
+                var normal = Native.MethodNameFromAddr(addrInfo.addr, true);
+                var hash = addrInfo.nameHash;
+                Log.Message($"NORM: {normalized,-130} H:{hash,14} R:`{normal}`");
+            }
+        }
+
+        [DebugAction(MultiplayerLocalCategory, "Show mod compat", allowedGameStates = AllowedGameStates.Playing)]
+        public static void ShowModCompatDialog()
+        {
+            var window = new ModCompatWindow(null, true, false, null);
+            Find.WindowStack.Add(window);
         }
 
 #if DEBUG
@@ -307,7 +457,7 @@ namespace Multiplayer.Client
             object FieldValue(FieldInfo field)
             {
                 var value = field.GetValue(null);
-                if (value is System.Collections.ICollection col)
+                if (value is ICollection col)
                     return col.Count;
                 if (field.Name.ToLowerInvariant().Contains("path") && value is string path && (path.Contains("/") || path.Contains("\\")))
                     return "[x]";
@@ -352,7 +502,7 @@ namespace Multiplayer.Client
                 toHash.Add(Encoding.UTF8.GetBytes(ins.opcode.Name + ins.operand));
             }
 
-            using (var sha256 = System.Security.Cryptography.SHA256.Create()) {
+            using (var sha256 = SHA256.Create()) {
                 return Convert.ToBase64String(sha256.ComputeHash(toHash.ToArray()));
             }
         }

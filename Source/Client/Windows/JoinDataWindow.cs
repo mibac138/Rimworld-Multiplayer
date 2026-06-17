@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
 using System.Linq;
 using Multiplayer.Client.Util;
 using Multiplayer.Common;
@@ -48,6 +47,7 @@ namespace Multiplayer.Client
         }
 
         private RemoteData remote;
+        private IConnector connector;
         private Node filesRoot;
         private Node configsRoot;
         public string connectAnywayDisabled;
@@ -55,9 +55,10 @@ namespace Multiplayer.Client
         private ModFileDict filesForUI;
         private ModListDiff modListDiff;
 
-        public JoinDataWindow(RemoteData remote)
+        public JoinDataWindow(RemoteData remote, IConnector connector)
         {
             this.remote = remote;
+            this.connector = connector;
 
             closeOnAccept = false;
             closeOnCancel = false;
@@ -168,7 +169,7 @@ namespace Multiplayer.Client
                 }
             }
 
-            var localConfigs = JoinData.GetSyncableConfigContents(remote.RemoteModIds.ToList());
+            var localConfigs = SyncConfigs.GetSyncableConfigContents(remote.RemoteModIds.ToList());
 
             if (remote.hasConfigs)
             {
@@ -254,7 +255,7 @@ namespace Multiplayer.Client
             }
 
             if (MpUI.ButtonTextWithTip(btnCenter, "MpFixAndRestart".Translate(), "MpRestartNeeded".Translate()))
-                Find.WindowStack.Add(new FixAndRestartWindow(remote));
+                Find.WindowStack.Add(new FixAndRestartWindow(remote, connector));
 
             if (Widgets.ButtonText(btnCenter.Right(150f), "MpMismatchQuit".Translate()))
             {
@@ -679,14 +680,16 @@ namespace Multiplayer.Client
     public class FixAndRestartWindow : Window
     {
         private RemoteData data;
+        private IConnector connector;
         private bool applyModList = true;
         private bool applyConfigs;
 
         public override Vector2 InitialSize => new(400, 200);
 
-        public FixAndRestartWindow(RemoteData data)
+        public FixAndRestartWindow(RemoteData data, IConnector connector)
         {
             this.data = data;
+            this.connector = connector;
             applyConfigs = data.hasConfigs;
 
             closeOnAccept = false;
@@ -750,23 +753,11 @@ namespace Multiplayer.Client
 
             if (applyConfigs)
             {
-                var tempPath = GenFilePaths.FolderUnderSaveData(JoinData.TempConfigsDir);
-                var tempDir = new DirectoryInfo(tempPath);
-                tempDir.Delete(true);
-                tempDir.Create();
-
-                foreach (var config in data.remoteModConfigs)
-                    File.WriteAllText(Path.Combine(tempPath, $"{config.ModId}-{config.FileName}"), config.Contents);
+                SyncConfigs.SaveConfigs(data.remoteModConfigs);
+                SyncConfigs.MarkApplicableForChildProcess();
             }
 
-            var connectTo = data.remoteSteamHost != null
-                ? $"{data.remoteSteamHost}"
-                : $"{data.remoteAddress}:{data.remotePort}";
-
-            // The env variables will get inherited by the child process started in GenCommandLine.Restart
-            Environment.SetEnvironmentVariable(EarlyInit.RestartConnectVariable, connectTo);
-            Environment.SetEnvironmentVariable(EarlyInit.RestartConfigsVariable, applyConfigs ? "true" : "false");
-
+            AutoJoinHandler.SetForChildProcess(connector);
             GenCommandLine.Restart();
         }
     }

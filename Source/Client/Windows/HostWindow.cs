@@ -1,15 +1,18 @@
-using Multiplayer.Common;
-using RimWorld;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Net;
+using Multiplayer.Client.Networking;
+using Multiplayer.Client.Util;
+using Multiplayer.Common;
+using Multiplayer.Common.Util;
+using RimWorld;
 using UnityEngine;
 using Verse;
 using Verse.Profile;
 using Verse.Sound;
 using Verse.Steam;
-using Multiplayer.Client.Util;
-using Multiplayer.Common.Util;
 
 namespace Multiplayer.Client
 {
@@ -34,6 +37,16 @@ namespace Multiplayer.Client
 
         private ServerSettings serverSettings;
 
+        public static void VerifyAndOpen(string path)
+        {
+            FileInfo fileInfo = new(path);
+            var saveFile = SaveFile.ReadMpSave(fileInfo);
+            ServerBrowser.CheckGameVersionAndMods(
+                saveFile,
+                () => { Find.WindowStack.Add(new HostWindow(saveFile) { returnToServerBrowser = false }); }
+            );
+        }
+
         public HostWindow(SaveFile file = null)
         {
             closeOnAccept = false;
@@ -53,7 +66,7 @@ namespace Multiplayer.Client
             if (serverSettings.multifaction)
                 multifactionLocked = true;
 
-            var localAddr = MpUtil.GetLocalIpAddress() ?? "127.0.0.1";
+            var localAddr = Endpoints.GetLocalIpAddress() ?? "127.0.0.1";
             serverSettings.lanAddress = localAddr;
 
             if (MpVersion.IsDebug)
@@ -127,8 +140,7 @@ namespace Multiplayer.Client
 
             float num = r.x + 10f;
             Rect rect = new Rect(num, r.y + (r.height - 20f) / 2f, 20f, 20f);
-            Texture2D texture2D = ContentFinder<Texture2D>.Get(tab == Tab.Connecting ? "UI/Icons/Options/OptionsGeneral" : "UI/Icons/Options/OptionsGameplay");
-            GUI.DrawTexture(rect, texture2D);
+            GUI.DrawTexture(rect, tab == Tab.Connecting ? MultiplayerStatic.OptionsGeneral : MultiplayerStatic.OptionsGameplay);
             num += 30f;
             Widgets.Label(new Rect(num, r.y, r.width - num, r.height), tab == Tab.Connecting ? "MpHostTabConnecting".Translate() : "MpHostTabGameplay".Translate());
         }
@@ -162,11 +174,11 @@ namespace Multiplayer.Client
             entry = entry.Down(30);
 
             // Steam hosting
-            if (SteamManager.Initialized)
-            {
-                MpUI.CheckboxLabeled(entry.Width(CheckboxWidth), $"{"MpSteam".Translate()}:  ", ref serverSettings.steam, order: ElementOrder.Right);
-                entry = entry.Down(30);
-            }
+            var steamRect = entry.Width(CheckboxWidth);
+            if (!SteamManager.Initialized) serverSettings.steam = false;
+            MpUI.CheckboxLabeled(steamRect, $"{"MpSteam".Translate()}:  ", ref serverSettings.steam, order: ElementOrder.Right, disabled: !SteamManager.Initialized);
+            if (!SteamManager.Initialized) TooltipHandler.TipRegion(steamRect, "MpSteamNotAvailable".Translate());
+            entry = entry.Down(30);
 
             // Sync configs
             TooltipHandler.TipRegion(entry.Width(CheckboxWidth), MpUtil.TranslateWithDoubleNewLines("MpSyncConfigsDescNew", 3));
@@ -403,8 +415,14 @@ namespace Multiplayer.Client
         {
             var settings = MpUtil.ShallowCopy(serverSettings, new ServerSettings());
 
-            if (settings.direct && TryParseEndpoints(serverSettings.directAddress) is false)
+            if (settings.direct && !TryParseEndpoints(settings))
                 return;
+
+            if (settings.steam && !SteamManager.Initialized)
+            {
+                Messages.Message("MpSteamNotAvailable".Translate(), MessageTypeDefOf.RejectInput, false);
+                return;
+            }
 
             if (settings.gameName.NullOrEmpty())
             {
@@ -418,7 +436,7 @@ namespace Multiplayer.Client
                 return;
             }
 
-            if (TryStartLocalServer(settings) is false)
+            if (!TryStartLocalServer(settings))
                 return;
 
             if (file?.replay ?? Multiplayer.IsReplay)
@@ -428,55 +446,126 @@ namespace Multiplayer.Client
             else
                 HostFromSpSaveFile(settings);
 
+            // No need to return to the server browser since we successfully started a local server.
+            returnToServerBrowser = false;
             Close();
         }
 
-        static bool TryParseEndpoints(string endpoints)
+        static bool TryParseEndpoints(ServerSettings settings)
         {
-            var split = endpoints.Split(MultiplayerServer.EndpointSeparator);
-            var success = true;
+            var invalidEndpoint = settings.TryParseEndpoints(out _);
+            if (invalidEndpoint != null)
+                Messages.Message(
+                    "MpInvalidEndpoint".Translate(invalidEndpoint),
+                    MessageTypeDefOf.RejectInput,
+                    false
+                );
+            return invalidEndpoint == null;
+        }
 
-            foreach (var endpoint in split)
-                if (!Endpoints.TryParse(endpoint, MultiplayerServer.DefaultPort, out _))
-                {
-                    Messages.Message(
-                        "MpInvalidEndpoint".Translate(endpoint),
-                        MessageTypeDefOf.RejectInput,
-                        false
-                    );
-                    success = false;
-                }
+        public static bool HostProgrammatically(ServerSettings sourceSettings)
+        {
+            var settings = MpUtil.ShallowCopy(sourceSettings, new ServerSettings());
 
-            return success;
+            if (settings.direct && !TryParseEndpoints(settings))
+                return false;
+
+            if (settings.gameName.NullOrEmpty())
+                return false;
+
+            if (!TryStartLocalServer(settings))
+                return false;
+
+            HostUtil.HostServer(settings, false);
+            return true;
         }
 
         static bool TryStartLocalServer(ServerSettings settings)
         {
             var localServer = new MultiplayerServer(settings);
-            localServer.liteNet.StartNet();
+            var success = true;
 
-            var failed = false;
-
-            if (settings.direct && localServer.liteNet.netManagers.Any(m => m.Item2.IsRunning is false))
-            {
-                foreach (var (endpoint, man) in localServer.liteNet.netManagers)
-                    if (man.IsRunning is false)
-                        Messages.Message("Failed to bind direct on " + endpoint, MessageTypeDefOf.RejectInput, false);
-                failed = true;
+            if (settings.direct) {
+                var liteNet = StartLiteNetManager(localServer, settings);
+                if (liteNet == null) success = false;
+                else localServer.netManagers.Add(liteNet);
             }
 
-            if (settings.lan && !localServer.liteNet.lanManager!.IsRunning)
+            if (settings.lan)
             {
-                Messages.Message("Failed to bind LAN on " + settings.lanAddress, MessageTypeDefOf.RejectInput, false);
-                failed = true;
+                var lan = StartLanManager(localServer, settings);
+                if (lan == null) success = false;
+                else localServer.netManagers.Add(lan);
             }
 
-            if (failed)
-                localServer.liteNet.StopNet();
-            else
-                Multiplayer.LocalServer = localServer;
+            if (settings.steam)
+            {
+                var steam = StartSteamP2PManager(localServer, settings);
+                if (steam == null) success = false;
+                else localServer.netManagers.Add(steam);
+            }
 
-            return !failed;
+            if (!success)
+            {
+                localServer.netManagers.ForEach(man => man.Stop());
+                return false;
+            }
+
+            Multiplayer.LocalServer = localServer;
+            return true;
+        }
+
+        private static INetManager StartLiteNetManager(MultiplayerServer server, ServerSettings settings)
+        {
+            var invalidEndpoint = settings.TryParseEndpoints(out var endpoints);
+            if (invalidEndpoint != null)
+            {
+                Messages.Message(
+                    "MpInvalidEndpoint".Translate(invalidEndpoint),
+                    MessageTypeDefOf.RejectInput,
+                    false
+                );
+                return null;
+            }
+
+            if (LiteNetManager.Create(server, endpoints, out var liteNet)) return liteNet;
+
+            foreach (var (endpoint, man) in liteNet.netManagers)
+            {
+                if (man.IsRunning) continue;
+                Messages.Message($"Failed to bind direct on {endpoint}", MessageTypeDefOf.RejectInput, false);
+            }
+
+            liteNet.Stop();
+            return null;
+        }
+
+        public static INetManager StartLanManager(MultiplayerServer server, ServerSettings settings)
+        {
+            if (!IPAddress.TryParse(settings.lanAddress, out var ipAddr))
+            {
+                Messages.Message(
+                    "MpInvalidEndpoint".Translate(settings.lanAddress),
+                    MessageTypeDefOf.RejectInput,
+                    false
+                );
+                return null;
+            }
+
+            var man = LiteNetLanManager.Create(server, ipAddr);
+            if (man != null) return man;
+
+            Messages.Message($"Failed to bind LAN on {settings.lanAddress}", MessageTypeDefOf.RejectInput, false);
+            return null;
+        }
+
+        public static INetManager StartSteamP2PManager(MultiplayerServer server, ServerSettings settings)
+        {
+            var man = SteamP2PNetManager.Create(server);
+            if (man != null) return man;
+
+            Messages.Message("Failed to start Steam networking", MessageTypeDefOf.RejectInput, false);
+            return null;
         }
 
         public override void PostClose()

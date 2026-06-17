@@ -1,26 +1,17 @@
 ﻿using System.Net;
 using System.Net.Sockets;
 using LiteNetLib;
+using Multiplayer.Common.Networking.Packet;
 
 namespace Multiplayer.Common
 {
-    public class MpServerNetListener : INetEventListener
+    public class MpServerNetListener(MultiplayerServer server, bool arbiter) : INetEventListener
     {
-        private MultiplayerServer server;
-        private bool arbiter;
-
-        public MpServerNetListener(MultiplayerServer server, bool arbiter)
-        {
-            this.server = server;
-            this.arbiter = arbiter;
-        }
-
         public void OnConnectionRequest(ConnectionRequest req)
         {
-            var result = server.playerManager.OnPreConnect(req.RemoteEndPoint.Address);
-            if (result != null)
+            if (server.playerManager.OnPreConnect(req.RemoteEndPoint.Address) is { } disconnectReason)
             {
-                req.Reject(ConnectionBase.GetDisconnectBytes(result.Value));
+                req.Reject(new ServerDisconnectPacket { reason = disconnectReason }.Serialize().data);
                 return;
             }
 
@@ -29,9 +20,9 @@ namespace Multiplayer.Common
 
         public void OnPeerConnected(NetPeer peer)
         {
-            ConnectionBase conn = new LiteNetConnection(peer);
+            var conn = new LiteNetConnection(peer);
             conn.ChangeState(ConnectionStateEnum.ServerJoining);
-            peer.Tag = conn;
+            peer.SetConnection(conn);
 
             var player = server.playerManager.OnConnected(conn);
             if (arbiter)
@@ -44,7 +35,18 @@ namespace Multiplayer.Common
         public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
         {
             ConnectionBase conn = peer.GetConnection();
-            server.playerManager.SetDisconnected(conn, MpDisconnectReason.ClientLeft);
+            var reason = disconnectInfo.Reason switch
+            {
+                // we (the server) closed the connection
+                DisconnectReason.DisconnectPeerCalled => MpDisconnectReason.ClientLeft,
+                // the client closed the connection
+                DisconnectReason.RemoteConnectionClose => MpDisconnectReason.ClientLeft,
+                _ => MpDisconnectReason.NetFailed
+            };
+            if (reason != MpDisconnectReason.ClientLeft)
+                ServerLog.Log($"Peer {conn} disconnected unexpectedly: " +
+                              $"{disconnectInfo.Reason}/{disconnectInfo.SocketErrorCode}");
+            server.playerManager.SetDisconnected(conn, reason);
         }
 
         public void OnNetworkLatencyUpdate(NetPeer peer, int latency)
@@ -52,7 +54,7 @@ namespace Multiplayer.Common
             peer.GetConnection().Latency = latency;
         }
 
-        public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, DeliveryMethod method)
+        public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod method)
         {
             byte[] data = reader.GetRemainingBytes();
             peer.GetConnection().serverPlayer.HandleReceive(new ByteReader(data), method == DeliveryMethod.ReliableOrdered);

@@ -1,8 +1,10 @@
-using Multiplayer.Client.Networking;
-using Multiplayer.Common;
 using System;
 using System.Collections.Generic;
+using Multiplayer.Client.DebugUi;
+using Multiplayer.Client.Desyncs;
+using Multiplayer.Client.Networking;
 using Multiplayer.Client.Util;
+using Multiplayer.Common;
 using UnityEngine;
 using Verse;
 using Verse.Steam;
@@ -21,16 +23,6 @@ namespace Multiplayer.Client
                 return;
 
             MpInput.Update();
-
-            try
-            {
-                Multiplayer.session?.netClient?.PollEvents();
-            }
-            catch (Exception e)
-            {
-                Log.Error($"Exception handling network events: {e}");
-            }
-
             queue.RunQueue(Log.Error);
             RunScheduled();
 
@@ -42,18 +34,35 @@ namespace Multiplayer.Client
             Multiplayer.session.Update();
             SyncFieldUtil.UpdateSync();
 
-            if (!Multiplayer.arbiterInstance && Application.isFocused && !TickPatch.Simulating && !Multiplayer.session.desynced)
+            if (PerformanceRecorder.IsRecording)
+            {
+                PerformanceRecorder.RecordFrame();
+            }
+
+            if (!Multiplayer.arbiterInstance && Application.isFocused && !TickPatch.Simulating &&
+                !Multiplayer.session.desynced && Multiplayer.session.client.State == ConnectionStateEnum.ClientPlaying)
                 Multiplayer.session.playerCursors.SendVisuals();
 
-            if (Multiplayer.Client is SteamBaseConn steamConn && SteamManager.Initialized)
-                foreach (var packet in SteamIntegration.ReadPackets(steamConn.recvChannel))
-                    // Note: receive can lead to disconnection
-                    if (steamConn.remoteId == packet.remote && Multiplayer.Client != null)
-                        ClientUtil.HandleReceive(packet.data, packet.reliable);
+            if (Multiplayer.Client is ITickableConnection conn)
+            {
+                try
+                {
+                    conn.Tick();
+                }
+                catch (Exception e)
+                {
+                    Log.Error($"Exception handling packet by {conn}: {e}");
+
+                    ConnectionStatusListeners.TryNotifyAll_Disconnected(
+                        SessionDisconnectInfo.FromLocalPacketReadException(e));
+                    Multiplayer.StopMultiplayer();
+                }
+            }
         }
 
         public void OnApplicationQuit()
         {
+            JittedMethods.OnApplicationQuit();
             Multiplayer.StopMultiplayer();
         }
 

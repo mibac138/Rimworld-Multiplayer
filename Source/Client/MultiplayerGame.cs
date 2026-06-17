@@ -1,6 +1,3 @@
-using Multiplayer.Client.Desyncs;
-using RimWorld;
-using RimWorld.BaseGen;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -8,7 +5,10 @@ using LudeonTK;
 using Multiplayer.API;
 using Multiplayer.Client.AsyncTime;
 using Multiplayer.Client.Comp;
+using Multiplayer.Client.Desyncs;
 using Multiplayer.Client.Factions;
+using RimWorld;
+using RimWorld.BaseGen;
 using UnityEngine;
 using Verse;
 
@@ -24,6 +24,7 @@ namespace Multiplayer.Client
         public List<MultiplayerMapComp> mapComps = new();
         public List<AsyncTimeComp> asyncTimeComps = new();
         public SharedCrossRefs sharedCrossRefs = new();
+        public ThingsById thingsById = new();
 
         private Faction myFaction;
         public Faction myFactionLoading;
@@ -75,10 +76,6 @@ namespace Multiplayer.Client
 
             typeof(SymbolResolver_SingleThing).TypeInitializer.Invoke(null, null);
 
-            foreach (var initialOpinion in Multiplayer.session.initialOpinions)
-                sync.AddClientOpinionAndCheckDesync(initialOpinion);
-            Multiplayer.session.initialOpinions.Clear();
-
             FactionCreator.ClearData();
         }
 
@@ -126,8 +123,6 @@ namespace Multiplayer.Client
 
         public void ChangeRealPlayerFaction(Faction newFaction, bool regenMapDrawers = true)
         {
-            Log.Message($"Changing real player faction to {newFaction} from {myFaction}");
-
             myFaction = newFaction;
             FactionContext.Set(newFaction);
             worldComp.SetFaction(newFaction);
@@ -145,6 +140,7 @@ namespace Multiplayer.Client
                         tc.GetComp<CompForbiddable>()?.UpdateOverlayHandle();
             }
 
+            Find.MainTabsRoot?.EscapeCurrentTab();
             Find.ColonistBar?.MarkColonistsDirty();
         }
     }

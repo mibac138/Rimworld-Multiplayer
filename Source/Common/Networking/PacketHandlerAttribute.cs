@@ -5,19 +5,31 @@ using JetBrains.Annotations;
 namespace Multiplayer.Common
 {
     [MeansImplicitUse]
-    public class PacketHandlerAttribute : Attribute
+    [AttributeUsage(AttributeTargets.Method)]
+    public class PacketHandlerAttribute(Packets packet, bool allowFragmented = false) : Attribute
     {
-        public readonly Packets packet;
-
-        public PacketHandlerAttribute(Packets packet)
-        {
-            this.packet = packet;
-        }
+        public readonly Packets packet = packet;
+        public readonly bool allowFragmented = allowFragmented;
     }
 
-    public class IsFragmentedAttribute : Attribute
+    [MeansImplicitUse]
+    [AttributeUsage(AttributeTargets.Method)]
+    public class TypedPacketHandlerAttribute : Attribute;
+
+    [AttributeUsage(AttributeTargets.Class)]
+    public class PacketHandlerClassAttribute(bool inheritHandlers = false) : Attribute
     {
+        public readonly bool inheritHandlers = inheritHandlers;
     }
 
-    public record PacketHandlerInfo(FastInvokeHandler Method, bool Fragment);
+    [MeansImplicitUse]
+    [AttributeUsage(AttributeTargets.Method)]
+    public class FragmentedPacketHandlerAttribute(Packets packet) : Attribute
+    {
+        public readonly Packets packet = packet;
+    }
+
+    public delegate void PacketHandlerInvoker(object target, ByteReader data);
+
+    public record PacketHandlerInfo(PacketHandlerInvoker Method, bool Fragment, FastInvokeHandler? FragmentHandler = null);
 }

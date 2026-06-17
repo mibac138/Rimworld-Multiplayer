@@ -1,7 +1,7 @@
-using Multiplayer.API;
-using Multiplayer.Common;
 using System;
+using Multiplayer.API;
 using Multiplayer.Client.Util;
+using Multiplayer.Common;
 using Verse;
 
 namespace Multiplayer.Client
@@ -19,7 +19,7 @@ namespace Multiplayer.Client
         private bool cancelIfValueNull;
 
         private Action<object, object> preApply;
-        private Action<object, object> postApply;
+        private Action<object, object, object> postApply;
 
         public SyncField(Type targetType, string memberPath)
         {
@@ -100,7 +100,7 @@ namespace Multiplayer.Client
             MpLog.Debug($"Set {memberPath} in {target} to {value}, map {data.MpContext().map}, index {index}");
             MpReflection.SetValue(target, memberPath, value, index);
 
-            postApply?.Invoke(target, value);
+            postApply?.Invoke(target, value, index);
         }
 
         public void Watch(object target = null, object index = null)
@@ -137,14 +137,29 @@ namespace Multiplayer.Client
 
         public ISyncField PostApply(Action<object, object> action)
         {
+            postApply = (target, value, _) => action(target, value);
+            return this;
+        }
+
+        public ISyncField PostApply(Action<object, object, object> action)
+        {
             postApply = action;
             return this;
         }
 
+        /// Throttles network updates for this field to reduce network chatter.
+        /// An update is sent only after the field has remained unchanged for 200ms.
+        /// If changes continue occurring within that window, the timer resets, and only
+        /// the latest value is eventually sent. All intermediate updates are discarded.
+        ///
+        /// The UI reflects the latest value immediately, without waiting for server
+        /// confirmation — avoiding rollback, and reapply behavior on server response.
+        ///
+        /// Ideal for rapidly changing fields (e.g., sliders) where sending every
+        /// intermediate value would be inefficient and unnecessary.
         public ISyncField SetBufferChanges()
         {
             SyncFieldUtil.bufferedChanges[this] = new();
-            Sync.bufferedFields.Add(this);
             bufferChanges = true;
             return this;
         }

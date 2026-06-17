@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using Ionic.Zlib;
 using Multiplayer.Client.Saving;
@@ -13,26 +14,58 @@ public enum LoadingState
     Downloading
 }
 
-public class ClientLoadingState : ClientBaseState
+[PacketHandlerClass(inheritHandlers: true)]
+public class ClientLoadingState(ConnectionBase connection) : ClientBaseState(connection)
 {
     public LoadingState subState = LoadingState.Waiting;
-
-    public ClientLoadingState(ConnectionBase connection) : base(connection)
+    public uint WorldExpectedSize { get; private set; }
+    public uint WorldReceivedSize { get; private set; }
+    public float DownloadProgress => (float)WorldReceivedSize / WorldExpectedSize;
+    public int DownloadProgressPercent => (int)(DownloadProgress * 100);
+    public int DownloadSpeedKBps
     {
+        get
+        {
+            if (downloadCheckpoints.Count == 0) return -1;
+            var firstCheckpoint = downloadCheckpoints.First();
+            var lastCheckpoint = downloadCheckpoints.Last();
+
+            var timeTakenMs = Utils.MillisNow - firstCheckpoint.Item1;
+            var timeTakenSecs = timeTakenMs / 1000f;
+
+            var downloadedBytes = lastCheckpoint.Item2 - firstCheckpoint.Item2;
+            var downloadedKBytes = downloadedBytes / 1000;
+            return (int)(downloadedKBytes / timeTakenSecs);
+        }
     }
+
+    private List<(long, uint)> downloadCheckpoints = new(capacity: 64);
+    private Stopwatch downloadTimeStopwatch = new();
 
     [PacketHandler(Packets.Server_WorldDataStart)]
     public void HandleWorldDataStart(ByteReader data)
     {
         subState = LoadingState.Downloading;
         connection.Lenient = false; // Lenient is set while rejoining
+        downloadTimeStopwatch.Start();
     }
 
-    [PacketHandler(Packets.Server_WorldData)]
-    [IsFragmented]
+    [FragmentedPacketHandler(Packets.Server_WorldData)]
+    public void HandleWorldDataFragment(FragmentedPacket packet)
+    {
+        WorldExpectedSize = packet.ExpectedSize;
+        WorldReceivedSize = packet.ReceivedSize;
+        if (downloadCheckpoints.Count == downloadCheckpoints.Capacity)
+            downloadCheckpoints.RemoveAt(0);
+        downloadCheckpoints.Add((Utils.MillisNow, packet.ReceivedSize));
+    }
+
+    [PacketHandler(Packets.Server_WorldData, allowFragmented: true)]
     public void HandleWorldData(ByteReader data)
     {
-        Log.Message("Game data size: " + data.Length);
+        var downloadMs = downloadTimeStopwatch.ElapsedMilliseconds;
+        downloadTimeStopwatch.Reset();
+        Log.Message($"Game data size: {data.Length}. Took {downloadMs}ms to receive.");
 
         int factionId = data.ReadInt32();
         Multiplayer.session.myFactionId = factionId;
@@ -86,11 +119,12 @@ public class ClientLoadingState : ClientBaseState
         TickPatch.serverFrozen = serverFrozen;
 
         int syncInfos = data.ReadInt32();
+        var initialOpinions = new List<ClientSyncOpinion>(syncInfos);
         for (int i = 0; i < syncInfos; i++)
-            Session.initialOpinions.Add(ClientSyncOpinion.Deserialize(new ByteReader(data.ReadPrefixedBytes())));
+            initialOpinions.Add(ClientSyncOpinion.Deserialize(new ByteReader(data.ReadPrefixedBytes())));
 
         Log.Message(syncInfos > 0
-            ? $"Initial sync opinions: {Session.initialOpinions.First().startTick}...{Session.initialOpinions.Last().startTick}"
+            ? $"Initial sync opinions: {initialOpinions.First().startTick}...{initialOpinions.Last().startTick}"
             : "No initial sync opinions");
 
         TickPatch.SetSimulation(
@@ -100,7 +134,16 @@ public class ClientLoadingState : ClientBaseState
             onCancel: GenScene.GoToMainMenu // Calls StopMultiplayer through a patch
         );
 
-        Loader.ReloadGame(mapsToLoad, true, false);
+        Stopwatch watch = Stopwatch.StartNew();
+        Loader.ReloadGame(mapsToLoad, true, () =>
+        {
+            foreach (var opinion in initialOpinions)
+            {
+                Multiplayer.game.sync.AddClientOpinionAndCheckDesync(opinion);
+            }
+        });
+        var loadingMs = watch.ElapsedMilliseconds;
+        Log.Message($"Loaded game in {loadingMs}ms");
         connection.ChangeState(ConnectionStateEnum.ClientPlaying);
     }
 }

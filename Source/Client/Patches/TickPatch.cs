@@ -1,12 +1,13 @@
-using HarmonyLib;
-using Multiplayer.Common;
-using RimWorld.Planet;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using HarmonyLib;
 using LudeonTK;
 using Multiplayer.Client.AsyncTime;
+using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
+using RimWorld.Planet;
 using UnityEngine;
 using Verse;
 
@@ -21,6 +22,7 @@ namespace Multiplayer.Client
         public static int tickUntil; // Ticks < tickUntil can be simulated
         public static int workTicks;
         public static bool currentExecutingCmdIssuedBySelf;
+        public static CommandType? currentExecutingCmdType;
         public static bool serverFrozen;
         public static int frozenAt;
 
@@ -93,7 +95,7 @@ namespace Multiplayer.Client
 
             if (Time.time - frameTimeSentAt > 32f/1000f)
             {
-                Multiplayer.Client.Send(Packets.Client_FrameTime, avgFrameTime);
+                Multiplayer.Client.Send(new ClientFrameTimePacket(avgFrameTime));
                 frameTimeSentAt = Time.time;
             }
 
@@ -148,7 +150,7 @@ namespace Multiplayer.Client
 
         static ITickable CurrentTickable()
         {
-            if (WorldRendererUtility.WorldRenderedNow)
+            if (WorldRendererUtility.WorldSelected)
                 return Multiplayer.AsyncWorldTime;
 
             if (Find.CurrentMap != null)
@@ -172,7 +174,14 @@ namespace Multiplayer.Client
                 while (tickable.Cmds.Count > 0 && tickable.Cmds.Peek().ticks == curTimer)
                 {
                     ScheduledCommand cmd = tickable.Cmds.Dequeue();
-                    tickable.ExecuteCmd(cmd);
+
+                    // Minimal code impact fix for #733. Having all the commands be added to a single queue gets rid of
+                    // the out-of-order execution problem. With a proper fix, this can be reverted to tickable.ExecuteCmd
+                    var target = TickableById(cmd.mapId);
+                    if (target == null)
+                    {
+                        Log.Error($"!!! Tickable of {cmd.mapId} not found! {cmd}");
+                    } else target.ExecuteCmd(cmd);
 
                     if (LongEventHandler.eventQueue.Count > 0) return true; // Yield to e.g. join-point creation
                 }
@@ -287,10 +296,7 @@ namespace Multiplayer.Client
             return rate;
         }
 
-        public static void ClearSimulating()
-        {
-            simulating = null;
-        }
+        public static void ClearSimulating() => simulating = null;
 
         public static void Reset()
         {
@@ -306,15 +312,9 @@ namespace Multiplayer.Client
             TimeControlPatch.prePauseTimeSpeed = null;
         }
 
-        public static void SetTimer(int value)
-        {
-            Timer = value;
-        }
+        public static void SetTimer(int value) => Timer = value;
 
-        public static ITickable TickableById(int tickableId)
-        {
-            return AllTickables.FirstOrDefault(t => t.TickableId == tickableId);
-        }
+        public static ITickable TickableById(int tickableId) => AllTickables.FirstOrDefault(t => t.TickableId == tickableId);
     }
 
     public class SimulatingData

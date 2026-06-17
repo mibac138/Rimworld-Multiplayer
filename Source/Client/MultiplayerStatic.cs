@@ -5,20 +5,21 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using HarmonyLib;
-using LiteNetLib;
+using Multiplayer.Client.Networking;
 using Multiplayer.Client.Patches;
 using Multiplayer.Client.Util;
 using Multiplayer.Common;
 using RimWorld;
 using RimWorld.Planet;
-using Steamworks;
 using UnityEngine;
 using Verse;
 using Verse.Sound;
 using Verse.Steam;
 using Debug = UnityEngine.Debug;
+using Object = UnityEngine.Object;
 
 namespace Multiplayer.Client
 {
@@ -35,6 +36,15 @@ namespace Multiplayer.Client
         public static readonly Texture2D Pulse = ContentFinder<Texture2D>.Get("Multiplayer/Pulse");
 
         public static readonly Texture2D ChangeRelationIcon = ContentFinder<Texture2D>.Get("UI/Icons/VisitorsHelp");
+
+        public static readonly Texture2D OptionsGeneral = ContentFinder<Texture2D>.Get("UI/Icons/Options/OptionsGeneral");
+        public static readonly Texture2D OptionsGameplay = ContentFinder<Texture2D>.Get("UI/Icons/Options/OptionsGameplay");
+
+        public static readonly Texture2D GiftModeIcon = ContentFinder<Texture2D>.Get("UI/Buttons/GiftMode");
+        public static readonly Texture2D TradeModeIcon = ContentFinder<Texture2D>.Get("UI/Buttons/TradeMode");
+
+        public const string MpHostReplayCmdLineArgName = "mphostreplay";
+        public static string MpHostReplayCmdLineArgValue;
 
         static MultiplayerStatic()
         {
@@ -54,24 +64,29 @@ namespace Multiplayer.Client
             // UnityEngine.Debug.Log instead of Verse.Log.Message because the server runs on its own thread
             ServerLog.info = str => Debug.Log($"MpServerLog: {str}");
             ServerLog.error = str => Debug.Log($"MpServerLog Error: {str}");
-            NetDebug.Logger = new ServerLog();
+            LiteNetLogger.Install();
 
             SetUsername();
 
             if (SteamManager.Initialized)
+            {
                 SteamIntegration.InitCallbacks();
+                SteamP2PIntegration.InitCallbacks();
+            }
 
             Log.Message($"Multiplayer version {MpVersion.Version}");
+            Log.Message($"Arch: {RuntimeInformation.ProcessArchitecture}/OS: {RuntimeInformation.OSArchitecture}");
             Log.Message($"Player's username: {Multiplayer.username}");
 
             var persistentObj = new GameObject();
             persistentObj.AddComponent<OnMainThread>();
-            UnityEngine.Object.DontDestroyOnLoad(persistentObj);
+            Object.DontDestroyOnLoad(persistentObj);
 
             MpConnectionState.SetImplementation(ConnectionStateEnum.ClientSteam, typeof(ClientSteamState));
             MpConnectionState.SetImplementation(ConnectionStateEnum.ClientJoining, typeof(ClientJoiningState));
             MpConnectionState.SetImplementation(ConnectionStateEnum.ClientLoading, typeof(ClientLoadingState));
             MpConnectionState.SetImplementation(ConnectionStateEnum.ClientPlaying, typeof(ClientPlayingState));
+            MpConnectionState.SetImplementation(ConnectionStateEnum.ClientBootstrap, typeof(ClientBootstrapState));
 
             MultiplayerData.CollectCursorIcons();
 
@@ -85,13 +100,13 @@ namespace Multiplayer.Client
 
             Log.messageQueue.maxMessages = 1000;
 
-            DoubleLongEvent(() =>
+            ClientUtil.DoubleLongEvent(() =>
             {
                 MultiplayerData.CollectDefInfos();
                 Sync.PostInitHandlers();
             }, "Loading"); // Right before the events from HandleCommandLine
 
-            HandleRestartConnect();
+            AutoJoinHandler.JoinIfApplicable();
             HandleCommandLine();
 
             if (Multiplayer.arbiterInstance)
@@ -109,11 +124,6 @@ namespace Multiplayer.Client
                 SimpleProfiler.Print("mp_prof_out.txt");
 
             MultiplayerData.staticCtorRoundMode = RoundMode.GetCurrentRoundMode();
-        }
-
-        private static void DoubleLongEvent(Action action, string textKey)
-        {
-            LongEventHandler.QueueLongEvent(() => LongEventHandler.QueueLongEvent(action, textKey, false, null), textKey, false, null);
         }
 
         private static void SetUsername()
@@ -137,45 +147,8 @@ namespace Multiplayer.Client
                 Multiplayer.username = "Player" + Rand.Range(0, 9999);
         }
 
-        private static void HandleRestartConnect()
-        {
-            if (Multiplayer.restartConnect == null)
-                return;
-
-            // No colon means the connect string is a steam user id
-            if (!Multiplayer.restartConnect.Contains(':'))
-            {
-                if (ulong.TryParse(Multiplayer.restartConnect, out ulong steamUser))
-                    DoubleLongEvent(() => ClientUtil.TrySteamConnectWithWindow((CSteamID)steamUser, false), "MpConnecting");
-
-                return;
-            }
-
-            var split = Multiplayer.restartConnect.Split(new[]{':'}, StringSplitOptions.RemoveEmptyEntries);
-            if (split.Length == 2 && int.TryParse(split[1], out int port))
-                DoubleLongEvent(() => ClientUtil.TryConnectWithWindow(split[0], port, false), "MpConnecting");
-        }
-
         private static void HandleCommandLine()
         {
-            if (GenCommandLine.TryGetCommandLineArg("connect", out string addressPort) && Multiplayer.restartConnect == null)
-            {
-                int port = MultiplayerServer.DefaultPort;
-
-                string address = null;
-                var split = addressPort.Split(':');
-
-                if (split.Length == 0)
-                    address = "127.0.0.1";
-                else if (split.Length >= 1)
-                    address = split[0];
-
-                if (split.Length == 2)
-                    int.TryParse(split[1], out port);
-
-                DoubleLongEvent(() => ClientUtil.TryConnectWithWindow(address, port, false), "Connecting");
-            }
-
             if (GenCommandLine.CommandLineArgPassed("arbiter"))
             {
                 Multiplayer.username = "The Arbiter";
@@ -187,7 +160,7 @@ namespace Multiplayer.Client
                 GenCommandLine.TryGetCommandLineArg("replaydata", out string replayData);
                 var replays = replay.Split(';').ToList().GetEnumerator();
 
-                DoubleLongEvent(() =>
+                ClientUtil.DoubleLongEvent(() =>
                 {
                     void LoadNextReplay()
                     {
@@ -205,7 +178,7 @@ namespace Multiplayer.Client
 
                         Replay.LoadReplay(Replay.SavedReplayFile(current[1]), true, () =>
                         {
-                            TickPatch.AllTickables.Do(t => t.SetDesiredTimeSpeed(TimeSpeed.Normal));
+                            TickPatch.AllTickables.Do(t => t.DesiredTimeSpeed = TimeSpeed.Normal);
 
                             void TickBatch()
                             {
@@ -254,6 +227,12 @@ namespace Multiplayer.Client
                 DirectXmlSaver.SaveDataObject(new SyncContainer(), "SyncHandlers.xml");
                 ExtendDirectXmlSaver.extend = false;
             }
+
+            if (GenCommandLine.TryGetCommandLineArg(MpHostReplayCmdLineArgName, out var path))
+            {
+                MpHostReplayCmdLineArgValue = path;
+                ClientUtil.DoubleLongEvent(() => HostWindow.VerifyAndOpen(path), "Loading");
+            }
         }
 
         public class SyncContainer
@@ -300,9 +279,15 @@ namespace Multiplayer.Client
                 // EarlyPatches are handled in MultiplayerMod.EarlyPatches
                 if (type.IsDefined(typeof(EarlyPatchAttribute))) return;
 
-                try {
+                var harmonyAttributes = HarmonyMethodExtensions.GetFromType(type);
+			    if (harmonyAttributes is null || harmonyAttributes.Count == 0) return;
+
+                try
+                {
                     harmony.CreateClassProcessor(type).Patch();
-                } catch (Exception e) {
+                }
+                catch (Exception e)
+                {
                     LogError($"FAIL: {type} with {e}");
                 }
             });
@@ -319,7 +304,9 @@ namespace Multiplayer.Client
                 };
 
                 foreach (Type t in typeof(Designator).AllSubtypesAndSelf()
-                             .Except(typeof(Designator_MechControlGroup))) // Opens float menu, sync that instead
+                    // Designator_MechControlGroup Opens float menu, sync that instead
+                    // Designator_Plan_CopySelection creates the placement gizmo, this shouldn't be synced
+                    .Except([typeof(Designator_MechControlGroup), typeof(Designator_Plan_CopySelection)]))
                 {
                     foreach ((string m, Type[] args) in designatorMethods)
                     {
@@ -358,7 +345,10 @@ namespace Multiplayer.Client
                 var fleckMethods = typeof(FleckMaker).GetMethods(BindingFlags.Static | BindingFlags.Public)
                     .Where(m => m.ReturnType == typeof(void))
                     .Concat(typeof(FleckManager).GetMethods() // FleckStatic uses Rand in Setup method, FleckThrown uses RandomInRange in TimeInterval. May as well catch all in case mods do the same.
-                        .Where(m => m.ReturnType == typeof(void)));
+                        .Where(m => m.ReturnType == typeof(void)))
+                    .Concat(typeof(LavaFXComponent).DeclaredMethod(nameof(LavaFXComponent.ThrowLavaSmoke)))
+                    .Concat(typeof(FishShadowComponent).DeclaredMethod(nameof(FishShadowComponent.SpawnFishFleck)))
+                    .Concat(typeof(CompFleckEmitterLongTerm).DeclaredMethod(nameof(CompFleckEmitterLongTerm.EmissionTick)));
                 var ritualMethods = new[] { canEverSpectate };
 
                 foreach (MethodBase m in effectMethods.Concat(moteMethods).Concat(fleckMethods).Concat(ritualMethods))
@@ -378,8 +368,9 @@ namespace Multiplayer.Client
                     ("Tick", Type.EmptyTypes),
                     ("TickRare", Type.EmptyTypes),
                     ("TickLong", Type.EmptyTypes),
-                    ("TakeDamage", new[]{ typeof(DamageInfo) }),
-                    ("Kill", new[]{ typeof(DamageInfo?), typeof(Hediff) })
+                    ("TickInterval", [typeof(int)]),
+                    ("TakeDamage", [typeof(DamageInfo)]),
+                    ("Kill", [typeof(DamageInfo?), typeof(Hediff)])
                 };
 
                 foreach (Type t in typeof(Thing).AllSubtypesAndSelf())
@@ -391,7 +382,7 @@ namespace Multiplayer.Client
 
                     foreach ((string m, Type[] args) in thingMethods)
                     {
-                        MethodInfo method = t.GetMethod(m, BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly, null, args, null);
+                        MethodInfo method = t.GetMethod(m, BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly | BindingFlags.NonPublic, null, args, null);
                         if (method != null)
                             TryPatch(method, thingMethodPrefix, finalizer: thingMethodFinalizer);
                     }
@@ -406,14 +397,15 @@ namespace Multiplayer.Client
                 var thingMethods = new[]
                 {
                     ("SpawnSetup", Type.EmptyTypes),
-                    ("Tick", Type.EmptyTypes)
+                    ("Tick", Type.EmptyTypes),
+                    ("TickInterval", [typeof(int)]),
                 };
 
                 foreach (Type t in typeof(WorldObject).AllSubtypesAndSelf())
                 {
                     foreach ((string m, Type[] args) in thingMethods)
                     {
-                        MethodInfo method = t.GetMethod(m, BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly, null, args, null);
+                        MethodInfo method = t.GetMethod(m, BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly | BindingFlags.NonPublic, null, args, null);
                         if (method != null)
                             TryPatch(method, prefix, finalizer: finalizer);
                     }

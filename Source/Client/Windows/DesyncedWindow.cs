@@ -1,5 +1,7 @@
+using JetBrains.Annotations;
 using Multiplayer.Client.Desyncs;
 using Multiplayer.Client.Util;
+using Multiplayer.Common;
 using UnityEngine;
 using Verse;
 
@@ -17,6 +19,7 @@ namespace Multiplayer.Client
         private float openedAt;
         private bool infoWritten;
         private bool rejoining;
+        [CanBeNull] private SaveableDesyncInfo.HostInfo hostInfo;
 
         public DesyncedWindow(string text, SaveableDesyncInfo desyncInfo)
         {
@@ -41,7 +44,10 @@ namespace Multiplayer.Client
             Text.Font = GameFont.Small;
 
             Text.Anchor = TextAnchor.UpperCenter;
-            Widgets.Label(new Rect(0, 0, inRect.width, 40), $"{"MpDesynced".Translate()}\n{text}");
+            var label = "MpDesynced".Translate();
+            if (MpVersion.IsDebug || Prefs.DevMode) label += "\n" + text;
+            else label += "\n" + "MpDesyncedSubtitle".Translate();
+            Widgets.Label(new Rect(0, 0, inRect.width, 40), label);
             Text.Anchor = TextAnchor.UpperLeft;
 
             var buttonsRect = new Rect((inRect.width - ButtonsWidth) / 2, 40, ButtonsWidth, 35);
@@ -51,6 +57,7 @@ namespace Multiplayer.Client
             float x = 0;
             if (Widgets.ButtonText(new Rect(x, 0, 120, 35), "MpTryResync".Translate()) && !rejoining)
             {
+                rejoining = true;
                 Log.Message("Multiplayer: requesting rejoin");
                 Rejoiner.DoRejoin();
             }
@@ -62,7 +69,7 @@ namespace Multiplayer.Client
             x += 120 + 10;
 
             if (Widgets.ButtonText(new Rect(x, 0, 120, 35), "MpChatButton".Translate()))
-                Find.WindowStack.Add(new ChatWindow()
+                Find.WindowStack.Add(new ChatWindow
                 {
                     closeOnClickedOutside = true,
                     absorbInputAroundWindow = true,
@@ -86,14 +93,19 @@ namespace Multiplayer.Client
             GUI.EndGroup();
         }
 
+        public void HandleHostDesyncInfo(SaveableDesyncInfo.HostInfo hostInfo)
+        {
+            this.hostInfo = hostInfo;
+        }
+
         public override void WindowUpdate()
         {
             const float maxWait = 5f;
 
-            var shouldWrite = Multiplayer.session?.desyncTracesFromHost != null || Time.realtimeSinceStartup - openedAt > maxWait;
-            if (!infoWritten && shouldWrite)
+            var shouldWrite = hostInfo != null || Time.realtimeSinceStartup - openedAt > maxWait;
+            if (!infoWritten && shouldWrite && desyncInfo.ReadyToSave)
             {
-                desyncInfo.Save();
+                desyncInfo.Save(hostInfo);
                 infoWritten = true;
             }
         }

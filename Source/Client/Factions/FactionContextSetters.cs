@@ -1,7 +1,8 @@
-﻿using System;
 using HarmonyLib;
 using RimWorld;
 using RimWorld.Planet;
+using System;
+using System.Collections.Generic;
 using Verse;
 
 namespace Multiplayer.Client.Factions;
@@ -20,16 +21,40 @@ static class AttackNowPatch
     }
 }
 
-[HarmonyPatch(typeof(GetOrGenerateMapUtility), nameof(GetOrGenerateMapUtility.GetOrGenerateMap), new []{ typeof(int), typeof(IntVec3), typeof(WorldObjectDef) })]
+[HarmonyPatch(typeof(GetOrGenerateMapUtility), nameof(GetOrGenerateMapUtility.GetOrGenerateMap), [typeof(PlanetTile), typeof(IntVec3), typeof(WorldObjectDef), typeof(IEnumerable<GenStepWithParams>), typeof(bool)])]
 static class MapGenFactionPatch
 {
-    static void Prefix(int tile)
+    static void Prefix(PlanetTile tile)
     {
-        var mapParent = Find.WorldObjects.MapParentAt(tile);
-        if (Multiplayer.Client != null && mapParent == null)
-            Log.Warning($"Couldn't set the faction context for map gen at {tile}: no world object");
+        Faction factionToSet = GetFactionAt(tile);
 
-        FactionContext.Push(mapParent?.Faction);
+        if (Multiplayer.Client != null && factionToSet == null)
+            Log.Warning($"Couldn't set the faction context for map gen at {tile.tileId}: no world object and no stored faction.");
+
+        FactionContext.Push(factionToSet);
+    }
+
+    private static Faction GetFactionAt(PlanetTile tile)
+    {
+        var worldObjectsHolder = Find.WorldObjects;
+
+        var mapParent = worldObjectsHolder.MapParentAt(tile);
+        if (mapParent != null && mapParent.Faction is { IsPlayer: true })
+            return mapParent.Faction;
+
+        var caravan = worldObjectsHolder.PlayerControlledCaravanAt(tile);
+        if (caravan != null)
+            return caravan.Faction;
+
+        var transporters = worldObjectsHolder.TravellingTransporters.Find(t => t.destinationTile == tile && t.Faction is { IsPlayer: true });
+        if (transporters != null)
+            return transporters.Faction;
+
+        var gravship = worldObjectsHolder.AllWorldObjects.Find(t => t is Gravship g && g.destinationTile == tile && t.Faction is { IsPlayer: true });
+        if (gravship != null)
+            return gravship.Faction;
+
+        return TileFactionContext.GetFactionForTile(tile);
     }
 
     static void Finalizer()
@@ -113,5 +138,30 @@ static class BillProductionValidateSettingsPatch
     static void Finalizer(Map __state)
     {
         __state?.PopFaction();
+    }
+}
+
+[HarmonyPatch(typeof(GravshipUtility), nameof(GravshipUtility.ArriveNewMap))]
+static class GravshipArriveNewMapFactionPatch
+{
+    static void Prefix(Gravship gravship)
+    {
+        FactionContext.Push(gravship.Faction);
+    }
+
+    static void Finalizer()
+    {
+        FactionContext.Pop();
+    }
+}
+
+// Clean up after map generation is complete
+[HarmonyPatch(typeof(MapGenerator), nameof(MapGenerator.GenerateMap))]
+static class CleanupTileFactionContext
+{
+    static void Finalizer(MapParent parent)
+    {
+        if (parent != null)
+            TileFactionContext.ClearTile(parent.Tile);
     }
 }

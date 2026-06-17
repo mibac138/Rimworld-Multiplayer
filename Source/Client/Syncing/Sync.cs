@@ -1,11 +1,11 @@
-using HarmonyLib;
-using Multiplayer.API;
-using Multiplayer.Common;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using HarmonyLib;
+using Multiplayer.API;
 using Multiplayer.Client.Persistent;
+using Multiplayer.Common;
 using Verse;
 
 namespace Multiplayer.Client
@@ -13,7 +13,6 @@ namespace Multiplayer.Client
     public static class Sync
     {
         public static List<SyncHandler> handlers = new();
-        public static List<SyncField> bufferedFields = new();
 
         // Internal maps for Harmony patches
         public static Dictionary<MethodBase, int> methodBaseToInternalId = new();
@@ -58,22 +57,28 @@ namespace Multiplayer.Client
 
         public static ISyncField RegisterSyncField(Type targetType, string fieldName)
         {
-            return RegisterSyncField(AccessTools.Field(targetType, fieldName));
-        }
+            MemberInfo field = AccessTools.Field(targetType, fieldName) as MemberInfo
+                ?? AccessTools.Property(targetType, fieldName)
+                ?? throw new Exception($"Couldn't find field {targetType}::{fieldName}");
 
-        public static ISyncField RegisterSyncField(FieldInfo field)
-        {
-            string memberPath = field.ReflectedType + "/" + field.Name;
             SyncField sf;
-            if (field.IsStatic) {
+            string memberPath;
+            if (field.IsStatic()) {
+                memberPath = field.ReflectedType + "/" + field.Name;
                 sf = Field(null, null, memberPath);
             } else {
-                sf = Field(field.ReflectedType, null, field.Name);
+                memberPath = targetType + "/" + field.Name;
+                sf = Field(targetType, null, field.Name);
             }
 
             registeredSyncFields.Add(memberPath, sf);
 
             return sf;
+        }
+
+        public static ISyncField RegisterSyncField(FieldInfo field)
+        {
+            return RegisterSyncField(field.ReflectedType, field.Name);
         }
 
         public static SyncDelegate RegisterSyncDelegate(Type inType, string nestedType, string methodName, string[] fields = null, Type[] args = null)
@@ -252,10 +257,16 @@ namespace Multiplayer.Client
 
         public static SyncMethod RegisterSyncMethod(MethodInfo method, SyncType[] argTypes = null)
         {
+            if (methodBaseToInternalId.TryGetValue(method, out var id))
+            {
+                Log.Error($"Error in {method.DeclaringType?.FullName}::{method}: Method is already registered as a SyncMethod.");
+                return (SyncMethod)internalIdToSyncMethod[id];
+            }
+
             MpUtil.MarkNoInlining(method);
 
-            SyncMethod handler = new SyncMethod(method.IsStatic ? null : method.DeclaringType, null, method, argTypes);
-            methodBaseToInternalId[handler.method] = internalIdToSyncMethod.Count;
+            var handler = new SyncMethod(method.IsStatic ? null : method.DeclaringType, null, method, argTypes);
+            methodBaseToInternalId[method] = internalIdToSyncMethod.Count;
             internalIdToSyncMethod.Add(handler);
             handlers.Add(handler);
 
@@ -410,6 +421,13 @@ namespace Multiplayer.Client
         }
 
         public static SyncField[] PostApply(this SyncField[] group, Action<object, object> func)
+        {
+            foreach (SyncField field in group)
+                field.PostApply(func);
+            return group;
+        }
+
+        public static SyncField[] PostApply(this SyncField[] group, Action<object, object, object> func)
         {
             foreach (SyncField field in group)
                 field.PostApply(func);

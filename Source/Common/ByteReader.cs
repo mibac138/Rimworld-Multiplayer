@@ -8,11 +8,10 @@ namespace Multiplayer.Common
         const int DefaultMaxStringLen = 32767;
 
         private readonly byte[] array;
-        private int index;
         public object? context;
 
         public int Length => array.Length;
-        public int Position => index;
+        public int Position { get; private set; }
         public int Left => Length - Position;
 
         public ByteReader(byte[] array)
@@ -20,7 +19,7 @@ namespace Multiplayer.Common
             this.array = array;
         }
 
-        public virtual byte PeekByte() => array[index];
+        public virtual byte PeekByte() => array[Position];
 
         public virtual byte ReadByte() => array[IncrementIndex(1)];
 
@@ -54,8 +53,8 @@ namespace Multiplayer.Common
             if (bytes > maxLen)
                 throw new ReaderException($"String too long ({bytes}>{maxLen})");
 
-            string result = Encoding.UTF8.GetString(array, index, bytes);
-            index += bytes;
+            string result = Encoding.UTF8.GetString(array, Position, bytes);
+            Position += bytes;
 
             return result;
         }
@@ -69,8 +68,8 @@ namespace Multiplayer.Common
             if (bytes > maxLen)
                 throw new ReaderException($"String too long ({bytes}>{maxLen})");
 
-            string result = Encoding.UTF8.GetString(array, index, bytes);
-            index += bytes;
+            string result = Encoding.UTF8.GetString(array, Position, bytes);
+            Position += bytes;
 
             return result;
         }
@@ -137,24 +136,67 @@ namespace Multiplayer.Common
             return result;
         }
 
+        public virtual T ReadEnum<T>() where T : Enum
+        {
+            Type type = Enum.GetUnderlyingType(typeof(T));
+
+            if (type == typeof(byte))
+            {
+                return (T)Enum.ToObject(typeof(T), ReadByte());
+            }
+            else if (type == typeof(sbyte))
+            {
+                return (T)Enum.ToObject(typeof(T), ReadSByte());
+            }
+            else if (type == typeof(short))
+            {
+                return (T)Enum.ToObject(typeof(T), ReadShort());
+            }
+            else if (type == typeof(ushort))
+            {
+                return (T)Enum.ToObject(typeof(T), ReadUShort());
+            }
+            else if (type == typeof(int))
+            {
+                return (T)Enum.ToObject(typeof(T), ReadInt32());
+            }
+            else if (type == typeof(uint))
+            {
+                return (T)Enum.ToObject(typeof(T), ReadUInt32());
+            }
+            else if (type == typeof(long) || type == typeof(IntPtr))
+            {
+                return (T)Enum.ToObject(typeof(T), ReadLong());
+            }
+            else if (type == typeof(ulong) || type == typeof(UIntPtr))
+            {
+                return (T)Enum.ToObject(typeof(T), ReadULong());
+            }
+            else
+            {
+                // This should never happen
+                throw new ReaderException($"Enum type unknown ({type})");
+            }
+        }
+
         private int IncrementIndex(int size)
         {
-            int i = index;
-            index += size;
+            int i = Position;
+            Position += size;
             return i;
         }
 
         public void Seek(int position)
         {
-            index = position;
+            Position = position;
+        }
+
+        internal byte[] GetBuffer()
+        {
+            return array;
         }
     }
 
-    public class ReaderException : Exception
-    {
-        public ReaderException(string msg) : base(msg)
-        {
-        }
-    }
+    public class ReaderException(string msg) : Exception(msg);
 
 }

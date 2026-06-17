@@ -1,6 +1,6 @@
-using System;
-using System.Diagnostics;
+﻿using System;
 using System.Linq;
+using Multiplayer.Common.Networking.Packet;
 
 namespace Multiplayer.Common
 {
@@ -25,11 +25,15 @@ namespace Multiplayer.Common
         public int lastCursorTick = -1;
 
         public int keepAliveId;
-        public Stopwatch keepAliveTimer = Stopwatch.StartNew();
         public int keepAliveAt;
 
         public bool frozen;
         public int unfrozenAt;
+
+        // Track which map the player is currently on
+        public int currentMapId = -1;
+        public bool hasReportedCurrentMap;
+        public bool helpOnlyUsableCommands;
 
         public string Username => conn.username;
         public int Latency => conn.Latency;
@@ -71,68 +75,47 @@ namespace Multiplayer.Common
             Server.playerManager.SetDisconnected(conn, reason);
         }
 
-        public void SendChat(string msg)
+        public void SendPacket<T>(T packet, bool reliable = true) where T : struct, IPacket =>
+            conn.Send(packet, reliable);
+
+        public void SendKeepAlivePacket() =>
+            SendPacket(new ServerKeepAlivePacket(keepAliveId), false);
+
+        public void SendPlayerList() =>
+            SendPacket(ServerPlayerListPacket.List(Server.JoinedPlayers.Select(p => p.PlayerInfoPacket())));
+
+        public ServerPlayerListPacket.PlayerInfo PlayerInfoPacket() => new()
         {
-            SendPacket(Packets.Server_Chat, new object[] { msg });
-        }
+            id = id,
+            username = Username ?? "",
+            latency = Latency,
+            type = type,
 
-        public void SendPacket(Packets packet, byte[] data, bool reliable = true)
+            status = status,
+
+            steamId = steamId,
+            steamPersonaName = steamPersonaName,
+
+            ticksBehind = ticksBehind,
+            simulating = simulating,
+
+            r = color.r,
+            g = color.g,
+            b = color.b,
+
+            factionId = FactionId,
+        };
+
+        public ServerPlayerListPacket.PlayerLatency LatencyPacket() => new()
         {
-            conn.Send(packet, data, reliable);
-        }
-
-        public void SendPacket(Packets packet, object[] data)
-        {
-            conn.Send(packet, data);
-        }
-
-        public void SendPlayerList()
-        {
-            var writer = new ByteWriter();
-
-            writer.WriteByte((byte)PlayerListAction.List);
-            writer.WriteInt32(Server.JoinedPlayers.Count());
-
-            foreach (var player in Server.JoinedPlayers)
-                writer.WriteRaw(player.SerializePlayerInfo());
-
-            conn.Send(Packets.Server_PlayerList, writer.ToArray());
-        }
-
-        public byte[] SerializePlayerInfo()
-        {
-            var writer = new ByteWriter();
-
-            writer.WriteInt32(id);
-            writer.WriteString(Username);
-            writer.WriteInt32(Latency);
-            writer.WriteByte((byte)type);
-            writer.WriteByte((byte)status);
-            writer.WriteULong(steamId);
-            writer.WriteString(steamPersonaName);
-            writer.WriteInt32(ticksBehind);
-            writer.WriteBool(simulating);
-            writer.WriteByte(color.r);
-            writer.WriteByte(color.g);
-            writer.WriteByte(color.b);
-            writer.WriteInt32(FactionId);
-
-            return writer.ToArray();
-        }
-
-        public void WriteLatencyUpdate(ByteWriter writer)
-        {
-            writer.WriteInt32(Latency);
-            writer.WriteInt32(ticksBehind);
-            writer.WriteBool(simulating);
-            writer.WriteFloat(frameTime);
-        }
+            playerId = id, latency = Latency, ticksBehind = ticksBehind, simulating = simulating,frameTime = frameTime
+        };
 
         public void UpdateStatus(PlayerStatus newStatus)
         {
             if (status == newStatus) return;
             status = newStatus;
-            Server.SendToPlaying(Packets.Server_PlayerList, new object[] { (byte)PlayerListAction.Status, id, (byte)newStatus });
+            Server.SendToPlaying(ServerPlayerListPacket.Status(id, newStatus));
         }
 
         public void ResetTimeVotes()
@@ -146,10 +129,8 @@ namespace Multiplayer.Common
             );
         }
 
-        public void SendMsg(string msg)
-        {
-            SendChat(msg);
-        }
+        public void SendMsg(string msg) => SendPacket(ServerChatPacket.Create(msg));
+        public void SendRawMsg(string msg) => SendPacket(ServerChatPacket.CreateRaw(msg));
     }
 
     public enum PlayerStatus : byte

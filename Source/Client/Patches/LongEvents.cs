@@ -1,13 +1,17 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
 using HarmonyLib;
 using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
 using Verse;
 
 namespace Multiplayer.Client.Patches
 {
-    [HarmonyPatch(typeof(LongEventHandler), nameof(LongEventHandler.QueueLongEvent), typeof(Action), typeof(string), typeof(bool), typeof(Action<Exception>), typeof(bool), typeof(Action))]
+    [HarmonyPatch(typeof(LongEventHandler), nameof(LongEventHandler.QueueLongEvent),
+        typeof(Action), typeof(string), typeof(bool), typeof(Action<Exception>), typeof(bool), typeof(bool), typeof(Action))]
     static class MarkLongEvents
     {
         private static MethodInfo MarkerMethod = AccessTools.Method(typeof(MarkLongEvents), nameof(Marker));
@@ -48,7 +52,7 @@ namespace Multiplayer.Client.Patches
             if (Multiplayer.Client == null) return;
 
             if (__state && MarkLongEvents.IsTickMarked(LongEventHandler.currentEvent?.eventAction))
-                Multiplayer.Client.Send(Packets.Client_Freeze, new object[] { true });
+                Multiplayer.Client.Send(ClientFreezePacket.Freeze());
         }
     }
 
@@ -58,11 +62,11 @@ namespace Multiplayer.Client.Patches
         static void Postfix()
         {
             if (Multiplayer.Client != null && NewLongEvent.currentEventWasMarked)
-                Multiplayer.Client.Send(Packets.Client_Freeze, new object[] { false });
+                Multiplayer.Client.Send(ClientFreezePacket.Unfreeze());
         }
     }
 
-    [HarmonyPatch(typeof(LongEventHandler), nameof(LongEventHandler.QueueLongEvent), new[] { typeof(Action), typeof(string), typeof(bool), typeof(Action<Exception>), typeof(bool), typeof(Action) })]
+    [HarmonyPatch(typeof(LongEventHandler), nameof(LongEventHandler.QueueLongEvent), [typeof(Action), typeof(string), typeof(bool), typeof(Action<Exception>), typeof(bool), typeof(bool), typeof(Action)])]
     static class LongEventAlwaysSync
     {
         static void Prefix(ref bool doAsynchronously, ref Action action, Action callback)
@@ -76,6 +80,41 @@ namespace Multiplayer.Client.Patches
                 if (callback != null)
                     action += callback;
             }
+        }
+    }
+
+    [HarmonyPatch(typeof(LongEventHandler), nameof(LongEventHandler.UpdateCurrentAsynchronousEvent))]
+    public static class PatchUpdateCurrentAsynchronousEventCleanUpOrder
+    {
+        readonly static MethodInfo OrginalMethod = AccessTools.Method(typeof(LongEventHandler), nameof(LongEventHandler.ExecuteToExecuteWhenFinished));
+        readonly static MethodInfo ReplacementMethod = AccessTools.Method(typeof(PatchUpdateCurrentAsynchronousEventCleanUpOrder), nameof(ReorderCleanupCode));
+
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+        {
+            foreach (CodeInstruction instruction in instructions)
+            {
+                if (instruction.Calls(OrginalMethod))
+                {
+                    yield return new CodeInstruction(OpCodes.Call, ReplacementMethod);
+                    yield return new CodeInstruction(OpCodes.Ret);
+                }
+                else
+                    yield return instruction;
+            }
+        }
+
+        public static void ReorderCleanupCode()
+        {
+            Action callback = LongEventHandler.currentEvent.callback;
+
+            LongEventHandler.currentEvent = null;
+            LongEventHandler.eventThread = null;
+            LongEventHandler.levelLoadOp = null;
+
+            LongEventHandler.ExecuteToExecuteWhenFinished();
+
+            if (callback != null)
+                callback();
         }
     }
 }

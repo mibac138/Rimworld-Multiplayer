@@ -129,6 +129,8 @@ public class SessionManager : IHasSessionData, ISessionManager
 
     public T GetFirstOfType<T>() where T : Session => allSessions.OfType<T>().FirstOrDefault();
 
+    public T GetFirstOfType<T>(Func<T, bool> predicate) where T : Session => allSessions.OfType<T>().FirstOrDefault(predicate);
+
     public T GetFirstWithId<T>(int id) where T : Session => allSessions.OfType<T>().FirstOrDefault(s => s.SessionId == id);
 
     public Session GetFirstWithId(int id) => allSessions.FirstOrDefault(s => s.SessionId == id);
@@ -144,6 +146,7 @@ public class SessionManager : IHasSessionData, ISessionManager
             {
                 semiPersistentSessions.RemoveAt(i);
                 allSessions.Remove(session);
+                if (session is ITickingSession tickingSession) tickingSessions.Remove(tickingSession);
                 var sessionType = session.GetType();
                 if (!tempCleanupLoggingTypes.Add(sessionType))
                     Log.Message($"Multiplayer session not valid after writing semi persistent data: {sessionType}");
@@ -175,6 +178,7 @@ public class SessionManager : IHasSessionData, ISessionManager
         var sessionsCount = data.ReadInt32();
         semiPersistentSessions.Clear();
         allSessions.RemoveAll(s => s is SemiPersistentSession);
+        tickingSessions.RemoveAll(s => s is SemiPersistentSession);
 
         for (int i = 0; i < sessionsCount; i++)
         {
@@ -188,6 +192,11 @@ public class SessionManager : IHasSessionData, ISessionManager
             }
 
             var objType = ApiSerialization.sessions[typeIndex];
+            if (!typeof(SemiPersistentSession).IsAssignableFrom(objType))
+            {
+                Log.Error($"Received data for ISession type {objType} (index {typeIndex}) that is not a semi persistent session");
+                continue;
+            }
 
             try
             {
@@ -197,6 +206,7 @@ public class SessionManager : IHasSessionData, ISessionManager
                     session.Sync(new ReadingSyncWorker(data, Multiplayer.serialization));
                     semiPersistentSessions.Add(session);
                     allSessions.Add(session);
+                    if (session is ITickingSession tickingSession) tickingSessions.Add(tickingSession);
                 }
             }
             catch (Exception e)
@@ -215,16 +225,19 @@ public class SessionManager : IHasSessionData, ISessionManager
             allSessions ??= new();
             exposableSessions ??= new();
             semiPersistentSessions ??= new();
+            tickingSessions ??= new();
 
             // Clear the set to make sure it's empty
             tempCleanupLoggingTypes.Clear();
             for (int i = exposableSessions.Count - 1; i >= 0; i--)
             {
                 var session = exposableSessions[i];
-                if (!session.IsSessionValid)
+                if (session is { IsSessionValid: true }) continue;
+
+                // Removal from allSessions handled lower
+                exposableSessions.RemoveAt(i);
+                if (session != null)
                 {
-                    // Removal from allSessions handled lower
-                    exposableSessions.RemoveAt(i);
                     session.PostRemoveSession();
                     var sessionType = session.GetType();
                     if (!tempCleanupLoggingTypes.Add(sessionType))
@@ -235,8 +248,12 @@ public class SessionManager : IHasSessionData, ISessionManager
             tempCleanupLoggingTypes.Clear();
 
             // Just in case something went wrong when exposing data, clear the all session from exposable ones and fill them again
+            // SemiPersistent sessions are not considered here, as a session can only be either semi-persistent or
+            // exposable. It's not possible to have a session be both (because a class can't have two base classes).
             allSessions.RemoveAll(s => s is ExposableSession);
             allSessions.AddRange(exposableSessions);
+            tickingSessions.RemoveAll(s => s is ExposableSession);
+            tickingSessions.AddRange(exposableSessions.OfType<ITickingSession>());
         }
     }
 

@@ -3,23 +3,30 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using HarmonyLib;
-
+using Multiplayer.Client.AsyncTime;
+using Multiplayer.Client.Comp;
+using Multiplayer.Client.Desyncs;
+using Multiplayer.Client.Patches;
+using Multiplayer.Client.Util;
+using Multiplayer.Common;
 using RimWorld;
 using UnityEngine;
 using Verse;
-
-using Multiplayer.Common;
-using System.Runtime.CompilerServices;
-using System.Threading;
-using Multiplayer.Client.AsyncTime;
-using Multiplayer.Client.Comp;
-using Multiplayer.Client.Util;
+#if EDIT_COMPILE_RELOAD
+using HotSwap;
+#endif
 
 namespace Multiplayer.Client
 {
     public static class Multiplayer
     {
+        public const string WebsiteLink = "https://rimworldmultiplayer.com";
+        // There is also a link in About.xml. Remember to update both
+        public const string DiscordLink = "https://discord.gg/S4bxXpv";
+
         public static Harmony harmony = new("multiplayer");
         public static MpSettings settings;
 
@@ -43,13 +50,15 @@ namespace Multiplayer.Client
         public static MultiplayerGameComp GameComp => game.gameComp;
         public static MultiplayerWorldComp WorldComp => game.worldComp;
         public static AsyncWorldTimeComp AsyncWorldTime => game.asyncWorldTimeComp;
+        public static ThingsById ThingsById => game.thingsById;
 
         public static bool ShowDevInfo => Prefs.DevMode && settings.showDevInfo;
         public static bool GhostMode => session is { ghostModeCheckbox: true };
 
         public static Faction RealPlayerFaction => Client != null ? game.RealPlayerFaction : Faction.OfPlayer;
 
-        public static bool ExecutingCmds => AsyncWorldTimeComp.executingCmdWorld || AsyncTimeComp.executingCmdMap != null;
+        public static bool ExecutingCmds => TickPatch.currentExecutingCmdType != null;
+        public static bool ExecutingCmdDebugTool => TickPatch.currentExecutingCmdType == CommandType.DebugTools;
         public static bool Ticking => AsyncWorldTimeComp.tickingWorld || AsyncTimeComp.tickingMap != null || ConstantTicker.ticking;
         public static Map MapContext => AsyncTimeComp.tickingMap ?? AsyncTimeComp.executingCmdMap;
 
@@ -65,6 +74,8 @@ namespace Multiplayer.Client
 
         public static string ReplaysDir => GenFilePaths.FolderUnderSaveData("MpReplays");
         public static string DesyncsDir => GenFilePaths.FolderUnderSaveData("MpDesyncs");
+        public static string LogsDir => GenFilePaths.FolderUnderSaveData("MpLogs");
+        public static string CacheDir => GenFilePaths.FolderUnderSaveData("MpCache");
 
         public static Stopwatch clock = Stopwatch.StartNew();
 
@@ -72,11 +83,18 @@ namespace Multiplayer.Client
         public static bool loadingErrors;
         public static Stopwatch harmonyWatch = new();
 
-        public static string restartConnect;
-        public static bool restartConfigs;
+        public static ModContentPack modContentPack;
 
-        public static void InitMultiplayer()
+        public static void InitMultiplayer(ModContentPack content)
         {
+#if EDIT_COMPILE_RELOAD
+            EcrLog.messageCallback = Log.Message;
+            EcrLog.errorCallback = Log.Error;
+            // EditCompileReload.RegisterAssemblyWatcher("Mods/Multiplayer/Source/Client/bin", "MultiplayerCommon.dll_orig");
+            EditCompileReload.RegisterAssemblyWatcher("Mods/Multiplayer/Source/Client/bin", "Multiplayer.dll_orig");
+#endif
+
+            modContentPack = content;
             Native.EarlyInit(
                 Application.platform switch
                 {
@@ -88,6 +106,7 @@ namespace Multiplayer.Client
                 });
 
             DisableOmitFramePointer();
+            JittedMethods.Init();
 
             MultiplayerLoader.Multiplayer.settingsWindowDrawer =
                 rect => MpSettingsUI.DoSettingsWindowContents(settings, rect);
@@ -126,6 +145,7 @@ namespace Multiplayer.Client
             });
 
             MultiplayerData.modCtorRoundMode = RoundMode.GetCurrentRoundMode();
+            VersionChecker.Init();
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -147,7 +167,7 @@ namespace Multiplayer.Client
                 if (mod.assemblies.loadedAssemblies.NullOrEmpty())
                     continue;
 
-                if (mod.Name == "Multiplayer")
+                if (mod == modContentPack)
                     continue;
 
                 // Test if mod is using multiplayer api
@@ -210,6 +230,7 @@ namespace Multiplayer.Client
             game = null;
 
             TickPatch.Reset();
+            VTRSync.Reset();
 
             Find.WindowStack?.WindowOfType<ServerBrowser>()?.Cleanup(true);
             SyncFieldUtil.ClearAllBufferedChanges();

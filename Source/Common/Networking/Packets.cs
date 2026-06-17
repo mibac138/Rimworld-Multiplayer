@@ -34,6 +34,8 @@ public enum Packets : byte
     Client_RequestRejoin,
     Client_SetFaction,
     Client_FrameTime,
+    Client_StandaloneWorldSnapshotUpload,
+    Client_StandaloneMapSnapshotUpload,
 
     // Joining
     Server_ProtocolOk,
@@ -61,7 +63,16 @@ public enum Packets : byte
     Server_PingLocation,
     Server_Traces,
     Server_SetFaction,
+    Server_RequestRejoin,
+
+    // All states (Joining, Loading, Playing)
+    Server_Disconnect,
+
+    // Bootstrap
+    Client_BootstrapSettings,
+    Client_BootstrapSave,
+    Server_Bootstrap,
 
     Count,
-    Special_Steam_Disconnect = 63 // Also the max packet id
+    Max = 63 // max packet id
 }

@@ -76,7 +76,7 @@ namespace Multiplayer.Client.Patches
 
             for (int i = insts.Count - 1; i >= 0; i--)
             {
-                if (insts[i].operand == FirstOrDefault)
+                if (insts[i].operand as MethodBase == FirstOrDefault)
                     insts.Insert(
                        i + 1,
                        new CodeInstruction(OpCodes.Ldloc_1),
@@ -138,7 +138,7 @@ namespace Multiplayer.Client.Patches
             {
                 yield return inst;
 
-                if (inst.operand == CellRectContains)
+                if (inst.operand as MethodInfo == CellRectContains)
                 {
                     yield return new CodeInstruction(OpCodes.Ldc_I4_1);
                     yield return new CodeInstruction(OpCodes.Or);
@@ -147,22 +147,17 @@ namespace Multiplayer.Client.Patches
         }
     }
 
-    [HarmonyPatch(typeof(Zone), nameof(Zone.Cells), MethodType.Getter)]
-    static class ZoneCellsShufflePatch
+    public static class CellsShufflePatchShared
     {
-        static FieldInfo CellsShuffled = AccessTools.Field(typeof(Zone), nameof(Zone.cellsShuffled));
-
-        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> insts)
+        public static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> insts, FieldInfo cellsShuffledField)
         {
             bool found = false;
-
-            foreach (var inst in insts)
+            foreach (CodeInstruction inst in insts)
             {
                 yield return inst;
-
-                if (!found && inst.operand == CellsShuffled)
+                if (!found && inst.operand as FieldInfo == cellsShuffledField)
                 {
-                    yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(ZoneCellsShufflePatch), nameof(ShouldShuffle)));
+                    yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(CellsShufflePatchShared), nameof(ShouldShuffle)));
                     yield return new CodeInstruction(OpCodes.Not);
                     yield return new CodeInstruction(OpCodes.Or);
                     found = true;
@@ -170,10 +165,26 @@ namespace Multiplayer.Client.Patches
             }
         }
 
-        static bool ShouldShuffle()
+        public static bool ShouldShuffle()
         {
             return Multiplayer.Client == null || Multiplayer.Ticking;
         }
+    }
+
+    [HarmonyPatch(typeof(Zone), nameof(Zone.Cells), MethodType.Getter)]
+    static class ZoneCellsShufflePatch
+    {
+        static readonly FieldInfo CellsShuffled = AccessTools.Field(typeof(Zone), "cellsShuffled");
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> insts)
+            => CellsShufflePatchShared.Transpiler(insts, CellsShuffled);
+    }
+
+    [HarmonyPatch(typeof(Plan), nameof(Plan.Cells), MethodType.Getter)]
+    static class PlanCellsShufflePatch
+    {
+        static readonly FieldInfo CellsShuffled = AccessTools.Field(typeof(Plan), "cellsShuffled");
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> insts)
+            => CellsShufflePatchShared.Transpiler(insts, CellsShuffled);
     }
 
     [HarmonyPatch]
@@ -255,7 +266,7 @@ namespace Multiplayer.Client.Patches
         {
             foreach (var inst in insts)
             {
-                if (inst.operand == AccessTools.PropertyGetter(typeof(ModLister), nameof(ModLister.BiotechInstalled)))
+                if (inst.operand as MethodInfo == AccessTools.PropertyGetter(typeof(ModLister), nameof(ModLister.BiotechInstalled)))
                     inst.operand = AccessTools.PropertyGetter(typeof(ModsConfig), nameof(ModsConfig.BiotechActive));
                 yield return inst;
             }
@@ -291,7 +302,7 @@ namespace Multiplayer.Client.Patches
             foreach (var inst in insts)
             {
                 // Remove mutation of battleActive during saving which was a source of non-determinism
-                if (inst.opcode == OpCodes.Stfld && inst.operand == battleActiveField)
+                if (inst.opcode == OpCodes.Stfld && inst.operand as FieldInfo == battleActiveField)
                 {
                     yield return new CodeInstruction(OpCodes.Pop);
                     yield return new CodeInstruction(OpCodes.Pop);
@@ -330,7 +341,7 @@ namespace Multiplayer.Client.Patches
         {
             foreach (var inst in insts)
             {
-                if (inst.opcode == OpCodes.Stfld && inst.operand == queryTickField)
+                if (inst.opcode == OpCodes.Stfld && inst.operand as FieldInfo == queryTickField)
                 {
                     yield return new CodeInstruction(OpCodes.Ldarg_0);
                     yield return new CodeInstruction(OpCodes.Ldarg_1);
@@ -374,7 +385,7 @@ namespace Multiplayer.Client.Patches
         {
             foreach (var inst in insts)
             {
-                if (inst.operand == clearMethod)
+                if (inst.operand as MethodInfo == clearMethod)
                     yield return new CodeInstruction(OpCodes.Pop);
                 else
                     yield return inst;
@@ -513,7 +524,7 @@ namespace Multiplayer.Client.Patches
                     // We use 1/60 since 1 second at speed 1 the deltaTime
                     // should (in perfect situation) be 60 ticks.
                     ci.opcode = OpCodes.Ldc_R4;
-                    ci.operand = 1f / 60f;
+                    ci.operand = 1f / GenTicks.TicksPerRealSecond;
 
                     patchCount++;
                 }
@@ -653,5 +664,91 @@ namespace Multiplayer.Client.Patches
             }
         }
     }
+
+    [HarmonyPatch(typeof(MainTabWindow), nameof(MainTabWindow.SetInitialSizeAndPosition))]
+    static class MainTabWindow_NoResizingInSimulation
+    {
+        static bool Prefix()
+        {
+            return Multiplayer.Client == null || Multiplayer.InInterface;
+        }
+    }
+
+    [HarmonyPatch(typeof(MainTabWindow_PawnTable), nameof(MainTabWindow_PawnTable.DoWindowContents))]
+    static class MainTabWindow_ResizeIfDirty
+    {
+        static void Prefix(MainTabWindow_PawnTable __instance)
+        {
+            if (__instance.table.dirty)
+                __instance.SetInitialSizeAndPosition();
+        }
+    }
+
+    [HarmonyPatch(typeof(PawnsArrivalModeWorker_EmergeFromWater), nameof(PawnsArrivalModeWorker_EmergeFromWater.Arrive))]
+    static class PawnsArrivalModeWorker_EmergeFromWater_FixCurrentMapUsage
+    {
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instr)
+        {
+            // Due to an oversight, the vanilla method is using Find.CurrentMap rather than using (Map)parms.target.
+            // This causes bugs in the game, like mechanoids emerging from void/sand/random locations rather than water.
+            // For us, it currently causes desyncs with multiple maps active, so we need to fix it.
+
+            var currentMapMethod = typeof(Find).DeclaredPropertyGetter(nameof(Find.CurrentMap));
+            var targetField = typeof(IncidentParms).DeclaredField(nameof(IncidentParms.target));
+
+            var patched = 0;
+
+            foreach (var ci in instr)
+            {
+                yield return ci;
+
+                // Replace the Find.CurrentMap calls with (Map)parms.target
+                if (ci.Calls(currentMapMethod))
+                {
+                    // Change the current instruction to load the 2nd argument (IncidentParms)
+                    ci.opcode = OpCodes.Ldarg_2;
+                    ci.operand = null;
+
+                    // Load the IncidentParms.target field
+                    yield return new CodeInstruction(OpCodes.Ldfld, targetField);
+
+                    // Cast the field's value to Map
+                    yield return new CodeInstruction(OpCodes.Castclass, typeof(Map));
+
+                    patched++;
+                }
+            }
+
+            const int expectedPatches = 2;
+            if (patched != expectedPatches)
+                Log.Error($"Patching emerge from water arrival mode failed. Expected patches: {expectedPatches}, actual patches: {patched}. There was either an issue or the bug was fixed in RimWorld itself.");
+        }
+    }
+
+    // FastTileFinder.ComputeQueryJob uses Interlocked.Increment to race-fill a 50-slot result array
+    // across parallel Unity Job batches. Thread scheduling differs between machines, so clients get
+    // different candidate tile sets. Force single-batch execution in MP so tiles are processed in
+    // tileId order, making the first 50 valid tiles consistent across all clients.
+    [HarmonyPatch(typeof(FastTileFinder), nameof(FastTileFinder.Query))]
+    static class FastTileFinderQueryDeterminismPatch
+    {
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+        {
+            var getIdealBatchCount = AccessTools.Method(typeof(UnityData), nameof(UnityData.GetIdealBatchCount));
+            var getBatchCount = AccessTools.Method(typeof(FastTileFinderQueryDeterminismPatch), nameof(GetBatchCount));
+
+            foreach (var instr in instructions)
+            {
+                if (instr.Calls(getIdealBatchCount))
+                    yield return new CodeInstruction(OpCodes.Call, getBatchCount);
+                else
+                    yield return instr;
+            }
+        }
+
+        static int GetBatchCount(int length) =>
+            Multiplayer.Client != null ? length : UnityData.GetIdealBatchCount(length);
+    }
+
 
 }

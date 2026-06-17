@@ -30,7 +30,7 @@ namespace Multiplayer.Client
 
                 yield return cur;
 
-                if (cur.opcode == OpCodes.Call && cur.operand == CanPlaceBlueprintOver)
+                if (cur.opcode == OpCodes.Call && cur.operand as MethodInfo == CanPlaceBlueprintOver)
                 {
                     var thingToIgnoreIndex = insts[i - 2].operand;
 
@@ -48,7 +48,6 @@ namespace Multiplayer.Client
         static bool ShouldIgnore1(Thing oldThing) => oldThing.def.IsBlueprint && oldThing.Faction != Faction.OfPlayer;
     }
 
-
     [HarmonyPatch(typeof(GenConstruct), nameof(GenConstruct.CanPlaceBlueprintAt_NewTemp))]
     static class CanPlaceBlueprintAtPatch2
     {
@@ -63,39 +62,75 @@ namespace Multiplayer.Client
 
             List<CodeInstruction> insts = e.ToList();
 
-            int loop1 = new CodeFinder(original, insts).
+            int loop = new CodeFinder(original, insts).
                 Forward(OpCodes.Ldstr, "IdenticalThingExists").
                 Backward(OpCodes.Ldarg_S, thingToIgnore_Ldarg_S);
 
             insts.Insert(
-                loop1 - 1,
-                new CodeInstruction(OpCodes.Ldloc_S, insts[loop1 - 1].operand),
+                loop - 1,
+                new CodeInstruction(OpCodes.Ldloc_S, insts[loop - 1].operand),
                 new CodeInstruction(OpCodes.Call, CanPlaceBlueprintAtPatch.ShouldIgnore1Method),
-                new CodeInstruction(OpCodes.Brtrue, insts[loop1 + 1].operand)
+                new CodeInstruction(OpCodes.Brtrue, insts[loop + 1].operand)
             );
 
-            int loop2 = new CodeFinder(original, insts).
+            return insts;
+        }
+    }
+
+    [HarmonyPatch(typeof(GenConstruct), nameof(GenConstruct.InteractionCellStandable))]
+    static class InteractionCellStandablePatch
+    {
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> e, MethodBase original)
+        {
+            byte thingToIgnore_Ldarg_S = (byte) original.GetParameters().FirstIndexOf(p => p.Name == "thingToIgnore");
+
+            if (thingToIgnore_Ldarg_S < 1) {
+                Log.Error($"FAIL: {nameof(InteractionCellStandablePatch)} can't find thingToIgnore");
+                return e;
+            }
+
+            List<CodeInstruction> insts = e.ToList();
+
+            int loop = new CodeFinder(original, insts).
                 Forward(OpCodes.Ldstr, "InteractionSpotBlocked").
                 Backward(OpCodes.Ldarg_S, thingToIgnore_Ldarg_S);
 
             insts.Insert(
-                loop2 - 3,
-                new CodeInstruction(OpCodes.Ldloc_S, insts[loop2 - 3].operand),
-                new CodeInstruction(OpCodes.Ldloc_S, insts[loop2 - 2].operand),
+                loop - 3,
+                new CodeInstruction(insts[loop - 3].opcode, insts[loop - 3].operand),
+                new CodeInstruction(insts[loop - 2].opcode, insts[loop - 2].operand),
                 new CodeInstruction(OpCodes.Callvirt, SpawnBuildingAsPossiblePatch.ThingListGet),
                 new CodeInstruction(OpCodes.Call, CanPlaceBlueprintAtPatch.ShouldIgnore1Method),
-                new CodeInstruction(OpCodes.Brtrue, insts[loop2 + 1].operand)
+                new CodeInstruction(OpCodes.Brtrue, insts[loop + 1].operand)
             );
 
-            int loop3 = new CodeFinder(original, insts).
+            return insts;
+        }
+    }
+
+    [HarmonyPatch(typeof(GenConstruct), nameof(GenConstruct.NotBlockingAnyInteractionCells))]
+    static class NotBlockingAnyInteractionCellsPatch
+    {
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> e, MethodBase original)
+        {
+            byte thingToIgnore_Ldarg_S = (byte) original.GetParameters().FirstIndexOf(p => p.Name == "thingToIgnore");
+
+            if (thingToIgnore_Ldarg_S < 1) {
+                Log.Error($"FAIL: {nameof(NotBlockingAnyInteractionCellsPatch)} can't find thingToIgnore");
+                return e;
+            }
+
+            List<CodeInstruction> insts = e.ToList();
+
+            int loop = new CodeFinder(original, insts).
                 Forward(OpCodes.Ldstr, "WouldBlockInteractionSpot").
                 Backward(OpCodes.Ldarg_S, thingToIgnore_Ldarg_S);
 
             insts.Insert(
-                loop3 - 1,
-                new CodeInstruction(OpCodes.Ldloc_S, insts[loop3 - 1].operand),
+                loop - 1,
+                new CodeInstruction(insts[loop - 1].opcode, insts[loop - 1].operand),
                 new CodeInstruction(OpCodes.Call, CanPlaceBlueprintAtPatch.ShouldIgnore1Method),
-                new CodeInstruction(OpCodes.Brtrue, insts[loop3 + 1].operand)
+                new CodeInstruction(OpCodes.Brtrue, insts[loop + 1].operand)
             );
 
             return insts;
@@ -138,7 +173,7 @@ namespace Multiplayer.Client
             {
                 yield return inst;
 
-                if (inst.opcode == OpCodes.Call && inst.operand == SpawningWipes)
+                if (inst.opcode == OpCodes.Call && inst.operand as MethodInfo == SpawningWipes)
                 {
                     yield return new CodeInstruction(OpCodes.Ldarg_2);
                     yield return new CodeInstruction(OpCodes.Ldloc_3);
@@ -161,7 +196,7 @@ namespace Multiplayer.Client
             {
                 yield return inst;
 
-                if (inst.opcode == OpCodes.Call && inst.operand == SpawningWipes)
+                if (inst.opcode == OpCodes.Call && inst.operand as MethodInfo == SpawningWipes)
                 {
                     yield return new CodeInstruction(OpCodes.Ldarg_2);
                     yield return new CodeInstruction(OpCodes.Ldloc_S, 4);
@@ -186,7 +221,7 @@ namespace Multiplayer.Client
             {
                 yield return inst;
 
-                if (inst.opcode == OpCodes.Call && inst.operand == SpawningWipes)
+                if (inst.opcode == OpCodes.Call && inst.operand as MethodInfo == SpawningWipes)
                 {
                     yield return new CodeInstruction(OpCodes.Ldarg_0);
                     yield return new CodeInstruction(OpCodes.Ldfld, ThingDefField);
@@ -300,7 +335,7 @@ namespace Multiplayer.Client
             {
                 yield return inst;
 
-                if (inst.opcode == OpCodes.Isinst && inst.operand == typeof(Blueprint))
+                if (inst.opcode == OpCodes.Isinst && inst.operand as Type == typeof(Blueprint))
                 {
                     yield return new CodeInstruction(OpCodes.Ldnull);
                     yield return new CodeInstruction(OpCodes.Cgt_Un);

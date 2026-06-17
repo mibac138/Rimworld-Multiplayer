@@ -1,12 +1,15 @@
-using HarmonyLib;
-using RimWorld;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using HarmonyLib;
+using Multiplayer.API;
+using RimWorld;
 using RimWorld.Planet;
 using UnityEngine;
 using Verse;
+using Verse.AI;
 using Verse.Sound;
 
 namespace Multiplayer.Client.Patches
@@ -100,14 +103,26 @@ namespace Multiplayer.Client.Patches
     [HarmonyPatch(typeof(DesignatorManager), nameof(DesignatorManager.Deselect))]
     static class CancelDesignatorDeselection
     {
+        static bool stopCancel = false;
+
         public static bool Cancel =>
             Multiplayer.Client != null &&
             Multiplayer.ExecutingCmds &&
             !TickPatch.currentExecutingCmdIssuedBySelf;
 
-        static bool Prefix()
+        static bool Prefix(DesignatorManager __instance)
         {
-            return !Cancel;
+            return stopCancel || !Cancel;
+        }
+
+        internal static void DisableCanceling()
+        {
+            stopCancel = false;
+        }
+
+        internal static void EnableCanceling()
+        {
+            stopCancel = true;
         }
     }
 
@@ -121,7 +136,7 @@ namespace Multiplayer.Client.Patches
         {
             foreach (var inst in insts)
             {
-                if (inst.operand == IsSelected)
+                if (inst.operand as MethodInfo == IsSelected)
                 {
                     yield return new CodeInstruction(OpCodes.Ldarg_0);
                     yield return new CodeInstruction(OpCodes.Call, DeselectOnDespawnMethod);
@@ -188,6 +203,55 @@ namespace Multiplayer.Client.Patches
                 giveJobAct,
                 healingDescriptionForPawn.NullOrEmpty()));
 
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(CompUsable), nameof(CompUsable.OrderForceTarget))]
+    static class NoTargetableCompUsableSyncing
+    {
+        static void Prefix(CompUsable __instance, ref bool __state)
+        {
+            if (Multiplayer.Client == null || Multiplayer.dontSync) return;
+
+            // Hopefully, all mods implement `PlayerChoosesTarget` as either always being true or false.
+            // If this is conditional then there could be some issues.
+            if (__instance.parent.GetComps<CompTargetable>().Any(x => x.PlayerChoosesTarget))
+            {
+                Multiplayer.dontSync = true;
+                __state = true;
+            }
+        }
+
+        static void Finalizer(bool __state)
+        {
+            if (__state)
+                Multiplayer.dontSync = false;
+        }
+    }
+
+    [HarmonyPatch(typeof(FloatMenuOptionProvider_DraftedMove),
+        nameof(FloatMenuOptionProvider_DraftedMove.PawnGotoAction))]
+    static class DraftedMove_GotoFeedbackPatch
+    {
+        private static MethodInfo tryTakeOrderedJob =
+            AccessTools.Method(typeof(Pawn_JobTracker), nameof(Pawn_JobTracker.TryTakeOrderedJob));
+
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+        {
+            foreach (var inst in instructions)
+            {
+                if (inst.Calls(tryTakeOrderedJob)) inst.operand = ((Delegate)CustomTryTakeOrderedJob).Method;
+                yield return inst;
+            }
+        }
+
+        [SyncMethod(exposeParameters = [1], context = SyncContext.QueueOrder_Down)]
+        static bool CustomTryTakeOrderedJob(Pawn_JobTracker self, Job job, JobTag? tag = JobTag.Misc,
+            bool requestQueueing = false)
+        {
+            if (self.TryTakeOrderedJob(job, tag, requestQueueing) && (TickPatch.currentExecutingCmdIssuedBySelf || Multiplayer.Client == null))
+                FleckMaker.Static(job.targetA.Cell, self.pawn.Map, FleckDefOf.FeedbackGoto);
             return false;
         }
     }

@@ -1,11 +1,12 @@
-using System;
-using System.Collections.Generic;
 using HarmonyLib;
 using LudeonTK;
+using Multiplayer.Client.Util;
 using Multiplayer.Common;
-
 using RimWorld;
 using RimWorld.Planet;
+using System;
+using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 using Verse;
 
@@ -43,13 +44,13 @@ namespace Multiplayer.Client
             List<WorldObject> prevWorldSelected = Find.WorldSelector.selected;
 
             Find.Selector.selected = new List<object>();
-            Find.WorldSelector.selected = new List<WorldObject>();
+            FieldRefs.worldSelected(Find.WorldSelector) = new List<WorldObject>();
 
             int selectedId = data.ReadInt32();
 
             if (Multiplayer.MapContext != null)
             {
-                var thing = ThingsById.thingsById.GetValueSafe(selectedId);
+                var thing = Multiplayer.ThingsById.GetValueSafe(selectedId);
                 if (thing != null)
                     Find.Selector.selected.Add(thing);
             }
@@ -90,6 +91,13 @@ namespace Multiplayer.Client
                 {
                     (state.currentData as List<FloatMenuOption>)?.FirstOrDefault(o => o.Hash() == currentHash)?.action();
                 }
+                else if (source == DebugSource.Targeter)
+                {
+                    var targetCell = new IntVec3(cursorX, 0, cursorZ);
+                    var handleTargetSelected = (state.currentData as Action<LocalTargetInfo>);
+
+                    handleTargetSelected?.Invoke(new LocalTargetInfo(targetCell));
+                }
             }
             finally
             {
@@ -108,20 +116,25 @@ namespace Multiplayer.Client
                 MouseCellPatch.result = null;
                 MouseTilePatch.result = null;
                 Find.Selector.selected = prevSelected;
-                Find.WorldSelector.selected = prevWorldSelected;
+                FieldRefs.worldSelected(Find.WorldSelector) = prevWorldSelected;
 
                 currentHash = 0;
                 currentPlayer = -1;
             }
         }
 
-        public static void SendCmd(DebugSource source, int hash, string path, Map map)
+        public static void SendCmd(DebugSource source, int hash, string path, Map map, IntVec3? forcedCell = null)
         {
             var writer = new LoggingByteWriter();
             writer.Log.Node($"Debug tool {source}, map {map.ToStringSafe()}");
             int cursorX = 0, cursorZ = 0;
 
-            if (map != null)
+            if (forcedCell.HasValue)
+            {
+                cursorX = forcedCell.Value.x;
+                cursorZ = forcedCell.Value.z;
+            }
+            else if (map != null)
             {
                 cursorX = UI.MouseCell().x;
                 cursorZ = UI.MouseCell().z;
@@ -214,6 +227,43 @@ namespace Multiplayer.Client
         Lister,
         Tool,
         FloatMenu,
+        Targeter
+    }
+
+    [HarmonyPatch]
+    static class DebugExecuteDropPodRaidAtLocation
+    {
+        static MethodBase TargetMethod()
+        {
+            return AccessTools.Method(
+                typeof(Targeter),
+                nameof(Targeter.BeginTargeting),
+                [
+                typeof(TargetingParameters), typeof(Action<LocalTargetInfo>),
+                typeof(Pawn), typeof(Action), typeof(Texture2D), typeof(bool)
+                ]);
+        }
+
+        [HarmonyPrefix, HarmonyPriority(Priority.First)]
+        static bool Prefix(ref Action<LocalTargetInfo> action)
+        {
+            if (Multiplayer.Client == null) return true;
+            if (!Multiplayer.GameComp.debugMode) return true;
+            if (!Multiplayer.ExecutingCmdDebugTool) return true;
+            if (!DebugSync.ShouldHandle()) return true;
+
+            DebugSync.CurrentPlayerState.currentData = action;
+
+            if (Multiplayer.ExecutingCmds && !TickPatch.currentExecutingCmdIssuedBySelf)
+                return false;
+
+            action = targetInfo =>
+            {
+                DebugSync.SendCmd(DebugSource.Targeter, 0, null, null, targetInfo.Cell);
+            };
+
+            return true;
+        }
     }
 
     [HarmonyPatch(typeof(DebugActionNode), nameof(DebugActionNode.Enter))]
@@ -221,7 +271,8 @@ namespace Multiplayer.Client
     {
         static void Prefix(DebugActionNode __instance)
         {
-            if (Multiplayer.Client != null && __instance.action is {Target: not MpDebugAction})
+            if (Multiplayer.Client != null && __instance.action is { Target: not MpDebugAction } &&
+                __instance.category != MpDebugActions.MultiplayerLocalCategory)
                 __instance.action = new MpDebugAction { node = __instance, original = __instance.action }.Action;
         }
 
@@ -246,7 +297,7 @@ namespace Multiplayer.Client
                         DebugSource.Tree,
                         0,
                         node.NodePath(),
-                        WorldRendererUtility.WorldRenderedNow ? null : Find.CurrentMap
+                        WorldRendererUtility.WorldSelected ? null : Find.CurrentMap
                     );
             }
         }

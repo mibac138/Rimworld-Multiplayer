@@ -1,7 +1,7 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net472</TargetFramework>
+    <TargetFramework>net48</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>12</LangVersion>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
@@ -14,10 +14,6 @@
     <AssemblyName>Multiplayer</AssemblyName>
   </PropertyGroup>
 
-  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
-    <DebugType>portable</DebugType>
-  </PropertyGroup>
-
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <Optimize>False</Optimize>
   </PropertyGroup>
@@ -27,14 +23,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Krafs.Publicizer" Version="2.2.1">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-    <PackageReference Include="Lib.Harmony" Version="2.3.3" ExcludeAssets="runtime" />
-    <PackageReference Include="Krafs.Rimworld.Ref" Version="1.5.4104" />
-    <PackageReference Include="RestSharp" Version="106.12.0" />
-    <PackageReference Include="RimWorld.MultiplayerAPI" Version="0.5.0" />
+    <PackageReference Include="Krafs.Publicizer" Version="2.3.0" />
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" ExcludeAssets="runtime" />
+    <PackageReference Include="Krafs.Rimworld.Ref" Version="1.6.4850" />
+    <PackageReference Include="RestSharp" Version="106.15.0" />
+    <PackageReference Include="RimWorld.MultiplayerAPI" Version="0.6.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -52,6 +45,12 @@
     <ProjectReference Include="..\Common\Common.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+<!--    <Reference Include="Multiplayer">-->
+<!--      <HintPath>bin\Multiplayer.dll_orig</HintPath>-->
+<!--    </Reference>-->
+  </ItemGroup>
+
   <!-- Ignore any system frameworks and get the system assemblies from Krafs.Rimworld.Ref -->
   <Target Name="RemoveFramework" BeforeTargets="PrepareForBuild" DependsOnTargets="GetReferenceAssemblyPaths">
     <PropertyGroup>
@@ -59,16 +58,27 @@
     </PropertyGroup>
   </Target>
 
-  <Target Name="CopyToRimworld" AfterTargets="Build">
-    <Copy SourceFiles="bin\Multiplayer.dll" DestinationFiles="..\..\AssembliesCustom\Multiplayer.dll" />
-    <Copy SourceFiles="bin\MultiplayerCommon.dll" DestinationFiles="..\..\AssembliesCustom\MultiplayerCommon.dll" />
+  <PropertyGroup>
+    <ModOutputPath>..\..\</ModOutputPath>
+  </PropertyGroup>
 
-    <Copy SourceFiles="bin\0MultiplayerAPI.dll" DestinationFiles="..\..\Assemblies\0MultiplayerAPI.dll" />
-    <Copy SourceFiles="bin\0PrepatcherAPI.dll" DestinationFiles="..\..\Assemblies\0PrepatcherAPI.dll" />
-    <Copy SourceFiles="bin\LiteNetLib.dll" DestinationFiles="..\..\Assemblies\LiteNetLib.dll" />
-    <Copy SourceFiles="bin\MultiplayerLoader.dll" DestinationFiles="..\..\Assemblies\MultiplayerLoader.dll" />
-    <Copy SourceFiles="bin\RestSharp.dll" DestinationFiles="..\..\Assemblies\RestSharp.dll" />
-    <Copy SourceFiles="bin\System.IO.Compression.dll" DestinationFiles="..\..\Assemblies\System.IO.Compression.dll" />
+  <PropertyGroup Label="Normalise stack trace file locations">
+    <PathMap>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)'))=$(AssemblyName)/</PathMap>
+  </PropertyGroup>
+
+  <Target Name="CopyToRimworld" AfterTargets="Build">
+    <Copy SourceFiles="bin\Multiplayer.dll" DestinationFiles="$(ModOutputPath)\AssembliesCustom\Multiplayer.dll" />
+    <Copy SourceFiles="bin\Multiplayer.pdb" DestinationFiles="$(ModOutputPath)\AssembliesCustom\Multiplayer.pdb" />
+    <Copy SourceFiles="bin\MultiplayerCommon.dll" DestinationFiles="$(ModOutputPath)\AssembliesCustom\MultiplayerCommon.dll" />
+    <Copy SourceFiles="bin\MultiplayerCommon.pdb" DestinationFiles="$(ModOutputPath)\AssembliesCustom\MultiplayerCommon.pdb" />
+
+    <ItemGroup>
+      <CopyToRimworld_ItemsToCopy Include="bin\*.dll" Exclude="bin\Multiplayer.dll;bin\MultiplayerCommon.dll" />
+    </ItemGroup>
+
+    <Copy SourceFiles="@(CopyToRimworld_ItemsToCopy)" DestinationFolder="$(ModOutputPath)\Assemblies\" />
   </Target>
+
+  <Import Project="PersonalDefinitions.targets" Condition="exists('PersonalDefinitions.targets')" />
 
 </Project>

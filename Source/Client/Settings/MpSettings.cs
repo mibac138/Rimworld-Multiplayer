@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Multiplayer.Client.Saving;
+using Multiplayer.Client.Util;
 using Multiplayer.Common;
 using UnityEngine;
 using Verse;
@@ -13,14 +14,18 @@ namespace Multiplayer.Client
         public bool showCursors = true;
         public bool autoAcceptSteam;
         public bool transparentChat = true;
+        public bool helpOnlyUsableCommands = true;
         public int autosaveSlots = 5;
         public bool showDevInfo;
+        public bool includeReplayInDesync = VersionChecker.IsContinuousRelease;
+        public int jittedMethodsInDesync = 1500;
         public int desyncTracesRadius = 40;
         public string serverAddress = "127.0.0.1";
         public bool appendNameToAutosave;
         public bool showModCompatibility = true;
         public bool hideTranslationMods = true;
         public bool enablePings = true;
+        public bool enableCrossPlanetLayerPings = true;
         public KeyCode? sendPingButton = KeyCode.Mouse4;
         public KeyCode? jumpToPingButton = KeyCode.Mouse3;
         public Rect chatRect;
@@ -29,6 +34,10 @@ namespace Multiplayer.Client
         public DesyncTracingMode desyncTracingMode = DesyncTracingMode.Fast;
         public bool transparentPlayerCursors = true;
         public List<ColorRGBClient> playerColors = new(DefaultPlayerColors);
+
+        public bool hideOtherPlayersInColonistBar = false;
+        public bool hideOtherPlayersQuests = false;
+
 
         internal static readonly ColorRGBClient[] DefaultPlayerColors =
         {
@@ -52,13 +61,17 @@ namespace Multiplayer.Client
             Scribe_Values.Look(ref showCursors, "showCursors", true);
             Scribe_Values.Look(ref autoAcceptSteam, "autoAcceptSteam");
             Scribe_Values.Look(ref transparentChat, "transparentChat", true);
+            Scribe_Values.Look(ref helpOnlyUsableCommands, "helpOnlyUsableCommands", true);
             Scribe_Values.Look(ref autosaveSlots, "autosaveSlots", 5);
             Scribe_Values.Look(ref showDevInfo, "showDevInfo");
+            Scribe_Values.Look(ref includeReplayInDesync, "includeReplayInDesync", VersionChecker.IsContinuousRelease);
+            Scribe_Values.Look(ref jittedMethodsInDesync, "jittedMethodsInDesync", 1500);
             Scribe_Values.Look(ref desyncTracesRadius, "desyncTracesRadius", 40);
             Scribe_Values.Look(ref serverAddress, "serverAddress", "127.0.0.1");
             Scribe_Values.Look(ref showModCompatibility, "showModCompatibility", true);
             Scribe_Values.Look(ref hideTranslationMods, "hideTranslationMods", true);
             Scribe_Values.Look(ref enablePings, "enablePings", true);
+            Scribe_Values.Look(ref enableCrossPlanetLayerPings, "enableCrossPlanetLayerPings", true);
             Scribe_Values.Look(ref sendPingButton, "sendPingButton", KeyCode.Mouse4);
             Scribe_Values.Look(ref jumpToPingButton, "jumpToPingButton", KeyCode.Mouse3);
             Scribe_Custom.LookRect(ref chatRect, "chatRect");
@@ -66,10 +79,11 @@ namespace Multiplayer.Client
             Scribe_Values.Look(ref showMainMenuAnim, "showMainMenuAnim", true);
             Scribe_Values.Look(ref appendNameToAutosave, "appendNameToAutosave");
             Scribe_Values.Look(ref transparentPlayerCursors, "transparentPlayerCursors", true);
+            Scribe_Values.Look(ref hideOtherPlayersInColonistBar, "hideOtherPlayersInColonistBar");
+            Scribe_Values.Look(ref hideOtherPlayersQuests, "hideOtherPlayersQuests");
 
             Scribe_Collections.Look(ref playerColors, "playerColors", LookMode.Deep);
-            if (playerColors.NullOrEmpty())
-                playerColors = new List<ColorRGBClient>(DefaultPlayerColors);
+            if (playerColors.NullOrEmpty()) playerColors = [..DefaultPlayerColors];
             if (Scribe.mode == LoadSaveMode.PostLoadInit)
                 PlayerManager.PlayerColors = playerColors.Select(c => (ColorRGB)c).ToArray();
 

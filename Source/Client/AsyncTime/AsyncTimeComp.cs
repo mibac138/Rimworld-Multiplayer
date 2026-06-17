@@ -1,15 +1,15 @@
-using HarmonyLib;
-using Multiplayer.Common;
-using RimWorld;
-using RimWorld.Planet;
 using System;
 using System.Collections.Generic;
-using Verse;
+using HarmonyLib;
 using Multiplayer.Client.Comp;
 using Multiplayer.Client.Factions;
 using Multiplayer.Client.Patches;
 using Multiplayer.Client.Saving;
 using Multiplayer.Client.Util;
+using Multiplayer.Common;
+using RimWorld;
+using RimWorld.Planet;
+using Verse;
 
 namespace Multiplayer.Client
 {
@@ -50,11 +50,10 @@ namespace Multiplayer.Client
             }
         }
 
-        public TimeSpeed DesiredTimeSpeed => timeSpeedInt;
-
-        public void SetDesiredTimeSpeed(TimeSpeed speed)
+        public TimeSpeed DesiredTimeSpeed
         {
-            timeSpeedInt = speed;
+            get => timeSpeedInt;
+            set => timeSpeedInt = value;
         }
 
         public bool Paused => this.ActualRateMultiplier(DesiredTimeSpeed) == 0f;
@@ -85,8 +84,6 @@ namespace Multiplayer.Client
         public bool forcedNormalSpeed;
         public int eventCount;
 
-        public Storyteller storyteller;
-        public StoryWatcher storyWatcher;
         public TimeSlower slower = new();
 
         public TickList tickListNormal = new(TickerType.Normal);
@@ -97,6 +94,9 @@ namespace Multiplayer.Client
         public ulong randState;
 
         public Queue<ScheduledCommand> cmds = new();
+
+        public int CurrentPlayerCount { get; private set; }
+        public int VTR => CurrentPlayerCount > 0 ? VTRSync.MinimumVtr : VTRSync.MaximumVtr;
 
         public AsyncTimeComp(Map map, int gameStartAbsTick = 0)
         {
@@ -121,14 +121,20 @@ namespace Multiplayer.Client
                 mapTicks++;
                 Find.TickManager.ticksGameInt = mapTicks;
 
+                //Either This line or PathFinderPatch can be commented out
+                //ForeCompeleScheduledJobs here can prevent all Multithread Races,
+                //but also force pathfinder to be done before tick runing
+                //PathFinderPatch is the other way try to snapshot everything worker threads are using
+                map.pathFinder.ForceCompleteScheduledJobs();
+
                 tickListNormal.Tick();
                 tickListRare.Tick();
                 tickListLong.Tick();
 
                 TickMapSessions();
 
-                storyteller.StorytellerTick();
-                storyWatcher.StoryWatcherTick();
+                Find.Storyteller.StorytellerTick();
+                Find.StoryWatcher.StoryWatcherTick();
 
                 QuestManagerTickAsyncTime();
 
@@ -169,27 +175,16 @@ namespace Multiplayer.Client
         }
 
         private TimeSnapshot? prevTime;
-        private Storyteller prevStoryteller;
-        private StoryWatcher prevStoryWatcher;
 
         public void PreContext()
         {
-            if (Multiplayer.GameComp.multifaction)
-            {
-                map.PushFaction(
-                    map.ParentFaction is { IsPlayer: true }
+            map.PushFaction(
+                !Multiplayer.GameComp.multifaction || map.ParentFaction is { IsPlayer: true }
                     ? map.ParentFaction
                     : Multiplayer.WorldComp.spectatorFaction,
-                    force: true);
-            }
+                force: true);
 
             prevTime = TimeSnapshot.GetAndSetFromMap(map);
-
-            prevStoryteller = Current.Game.storyteller;
-            prevStoryWatcher = Current.Game.storyWatcher;
-
-            Current.Game.storyteller = storyteller;
-            Current.Game.storyWatcher = storyWatcher;
 
             Rand.PushState();
             Rand.StateCompressed = randState;
@@ -200,16 +195,12 @@ namespace Multiplayer.Client
 
         public void PostContext()
         {
-            Current.Game.storyteller = prevStoryteller;
-            Current.Game.storyWatcher = prevStoryWatcher;
-
             prevTime?.Set();
 
             randState = Rand.StateCompressed;
             Rand.PopState();
 
-            if (Multiplayer.GameComp.multifaction)
-                map.PopFaction();
+            map.PopFaction();
         }
 
         public void ExposeData()
@@ -219,14 +210,13 @@ namespace Multiplayer.Client
 
             Scribe_Values.Look(ref gameStartAbsTickMap, "gameStartAbsTickMap");
 
-            Scribe_Deep.Look(ref storyteller, "storyteller");
-
-            Scribe_Deep.Look(ref storyWatcher, "storyWatcher");
-            if (Scribe.mode == LoadSaveMode.LoadingVars && storyWatcher == null)
-                storyWatcher = new StoryWatcher();
-
             Scribe_Custom.LookULong(ref randState, "randState", 1);
         }
+
+        public int IncreasePlayerCount() => CurrentPlayerCount += 1;
+        // This should never go below 0, this is just defensive programming. Hopefully not needed anymore, but
+        // nevertheless still left.
+        public int DecreasePlayerCount() => CurrentPlayerCount = Math.Max(0, CurrentPlayerCount - 1);
 
         public void FinalizeInit()
         {
@@ -253,10 +243,11 @@ namespace Multiplayer.Client
             Current.Game.currentMapIndex = (sbyte)map.Index;
 
             executingCmdMap = map;
-            TickPatch.currentExecutingCmdIssuedBySelf = cmd.issuedBySelf && !TickPatch.Simulating;
+            TickPatch.currentExecutingCmdIssuedBySelf = cmd.IsIssuedBySelf() && !TickPatch.Simulating;
+            TickPatch.currentExecutingCmdType = cmdType;
 
             PreContext();
-            map.PushFaction(cmd.GetFaction());
+            map.PushFaction(cmd.GetFaction(), force: true);
 
             context.map = map;
 
@@ -285,7 +276,7 @@ namespace Multiplayer.Client
                 if (cmdType == CommandType.MapTimeSpeed && Multiplayer.GameComp.asyncTime)
                 {
                     TimeSpeed speed = (TimeSpeed)data.ReadByte();
-                    SetDesiredTimeSpeed(speed);
+                    DesiredTimeSpeed = speed;
 
                     MpLog.Debug("Set map time speed " + speed);
                 }
@@ -319,6 +310,7 @@ namespace Multiplayer.Client
                 PostContext();
 
                 TickPatch.currentExecutingCmdIssuedBySelf = false;
+                TickPatch.currentExecutingCmdType = null;
                 executingCmdMap = null;
 
                 if (!keepTheMap)
@@ -376,6 +368,33 @@ namespace Multiplayer.Client
                     Zone zone = SyncSerialization.ReadSync<Zone>(data);
                     if (zone != null)
                         Find.Selector.selected.Add(zone);
+                }
+
+                if (designator is Designator_Plan_Add designatorPlanAdd)
+                {
+                    designatorPlanAdd.colorDef = SyncSerialization.ReadSync<ColorDef>(data);
+                    designator = designatorPlanAdd;
+                }
+
+                if (designator is Designator_Plan_Copy designatorPlanCopy)
+                {
+                    designatorPlanCopy.cells.Clear();
+                    designatorPlanCopy.cells.AddRange(SyncSerialization.ReadSync<List<IntVec3>>(data));
+                    designator = designatorPlanCopy;
+                }
+
+                if (designator is Designator_Plan_CopySelectionPaste pasteDesignator)
+                {
+                    pasteDesignator.indices = SyncSerialization.ReadSync<CellIndices>(data);
+                    pasteDesignator.rotation = SyncSerialization.ReadSync<Rot4>(data);
+
+                    pasteDesignator.grid.Clear();
+                    pasteDesignator.grid.AddRange(SyncSerialization.ReadSync<List<ColorDef>>(data));
+
+                    pasteDesignator.colors.Clear();
+                    pasteDesignator.colors.AddRange(SyncSerialization.ReadSync<HashSet<ColorDef>>(data));
+
+                    designator = pasteDesignator;
                 }
 
                 return true;

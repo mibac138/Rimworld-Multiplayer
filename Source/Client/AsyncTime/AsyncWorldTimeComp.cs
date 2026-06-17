@@ -5,6 +5,7 @@ using HarmonyLib;
 using Multiplayer.Client.Comp;
 using Multiplayer.Client.Desyncs;
 using Multiplayer.Client.Factions;
+using Multiplayer.Client.Patches;
 using Multiplayer.Client.Saving;
 using Multiplayer.Client.Util;
 using Multiplayer.Common;
@@ -18,7 +19,6 @@ namespace Multiplayer.Client.AsyncTime;
 public class AsyncWorldTimeComp : IExposable, ITickable
 {
     public static bool tickingWorld;
-    public static bool executingCmdWorld;
     private TimeSpeed timeSpeedInt;
 
     public float TimeToTickThrough { get; set; }
@@ -45,19 +45,21 @@ public class AsyncWorldTimeComp : IExposable, ITickable
     }
 
     // Run at the speed of the fastest map or at chosen speed if there are no maps
-    public TimeSpeed DesiredTimeSpeed => !Find.Maps.Any() ?
-        timeSpeedInt :
-        Find.Maps.Select(m => m.AsyncTime())
-        .Where(a => a.ActualRateMultiplier(a.DesiredTimeSpeed) != 0f)
-        .Max(a => a?.DesiredTimeSpeed) ?? TimeSpeed.Paused;
-
-    public void SetDesiredTimeSpeed(TimeSpeed speed)
+    public TimeSpeed DesiredTimeSpeed
     {
-        timeSpeedInt = speed;
+        get => !Find.Maps.Any()
+            ? timeSpeedInt
+            : Find.Maps.Select(m => m.AsyncTime())
+                .Where(a => a.ActualRateMultiplier(a.DesiredTimeSpeed) != 0f)
+                .Max(a => a?.DesiredTimeSpeed) ?? TimeSpeed.Paused;
+        set => timeSpeedInt = value;
     }
 
     public Queue<ScheduledCommand> Cmds => cmds;
     public Queue<ScheduledCommand> cmds = new();
+
+    public int CurrentPlayerCount { get; private set; }
+    public int VTR => CurrentPlayerCount > 0 ? VTRSync.MinimumVtr : VTRSync.MaximumVtr;
 
     public int TickableId => -1;
 
@@ -172,8 +174,8 @@ public class AsyncWorldTimeComp : IExposable, ITickable
         LoggingByteReader data = new LoggingByteReader(cmd.data);
         data.Log.Node($"{cmdType} Global");
 
-        executingCmdWorld = true;
-        TickPatch.currentExecutingCmdIssuedBySelf = cmd.issuedBySelf && !TickPatch.Simulating;
+        TickPatch.currentExecutingCmdIssuedBySelf = cmd.IsIssuedBySelf() && !TickPatch.Simulating;
+        TickPatch.currentExecutingCmdType = cmdType;
 
         PreContext();
         FactionExtensions.PushFaction(null, cmd.GetFaction());
@@ -214,6 +216,9 @@ public class AsyncWorldTimeComp : IExposable, ITickable
 
             if (cmdType == CommandType.CreateJoinPoint)
             {
+                if (Multiplayer.session?.ConnectedToStandaloneServer == true && !TickPatch.currentExecutingCmdIssuedBySelf)
+                    return;
+
                 LongEventHandler.QueueLongEvent(CreateJoinPointAndSendIfHost, "MpCreatingJoinPoint", false, null);
             }
 
@@ -222,6 +227,27 @@ public class AsyncWorldTimeComp : IExposable, ITickable
                 var playerId = data.ReadInt32();
                 var canUseDevMode = data.ReadBool();
                 Multiplayer.GameComp.playerData[playerId] = new PlayerData { canUseDevMode = canUseDevMode };
+            }
+
+            if (cmdType == CommandType.PlayerCount)
+            {
+                int previousMapId = data.ReadInt32();
+                int newMapId = data.ReadInt32();
+                int mapCount = Find.Maps.Count;
+
+                var prev = -1;
+                if (previousMapId >= 0)
+                    prev = Find.Maps.FirstOrDefault(x => x.uniqueID == previousMapId)?.AsyncTime()?.DecreasePlayerCount() ?? -1;
+                else if (previousMapId == VTRSync.WorldMapId)
+                    prev = Multiplayer.AsyncWorldTime.CurrentPlayerCount -= 1;
+
+                var curr = -1;
+                if (newMapId >= 0)
+                    curr = Find.Maps.FirstOrDefault(x => x.uniqueID == newMapId)?.AsyncTime()?.IncreasePlayerCount() ?? -1;
+                else if (newMapId == VTRSync.WorldMapId)
+                    curr = Multiplayer.AsyncWorldTime.CurrentPlayerCount += 1;
+
+                MpLog.Debug($"[{worldTicks}|{Multiplayer.session.remoteTickUntil}] Player count change: previousMapId={previousMapId} ({prev}), newMapId={newMapId} ({curr}), mapCount={mapCount}");
             }
         }
         catch (Exception e)
@@ -239,7 +265,7 @@ public class AsyncWorldTimeComp : IExposable, ITickable
             FactionExtensions.PopFaction();
             PostContext();
             TickPatch.currentExecutingCmdIssuedBySelf = false;
-            executingCmdWorld = false;
+            TickPatch.currentExecutingCmdType = null;
 
             Multiplayer.game.sync.TryAddCommandRandomState(randState);
 
@@ -250,18 +276,33 @@ public class AsyncWorldTimeComp : IExposable, ITickable
 
     private static void CreateJoinPointAndSendIfHost()
     {
-        Multiplayer.session.dataSnapshot = SaveLoad.CreateGameDataSnapshot(SaveLoad.SaveAndReload(), Multiplayer.GameComp.multifaction);
+        Multiplayer.session.dataSnapshot = SaveLoad.SaveReloadAndCreateSnapshot(
+            Multiplayer.GameComp.multifaction,
+            ReloadOptimizationMode.ForJoinPointSnapshot
+        );
 
-        if (!TickPatch.Simulating && !Multiplayer.IsReplay &&
-            (Multiplayer.LocalServer != null || Multiplayer.arbiterInstance))
-            SaveLoad.SendGameData(Multiplayer.session.dataSnapshot, true);
+        if (!TickPatch.Simulating && !Multiplayer.IsReplay)
+        {
+            if (Multiplayer.session?.ConnectedToStandaloneServer == true)
+            {
+                // Standalone: every client uploads world data + individual snapshots
+                SaveLoad.SendGameData(Multiplayer.session.dataSnapshot, true);
+                SaveLoad.SendStandaloneMapSnapshots(Multiplayer.session.dataSnapshot);
+                SaveLoad.SendStandaloneWorldSnapshot(Multiplayer.session.dataSnapshot);
+            }
+            else if (Multiplayer.LocalServer != null || Multiplayer.arbiterInstance)
+            {
+                // Hosted: only host/arbiter uploads world data
+                SaveLoad.SendGameData(Multiplayer.session.dataSnapshot, true);
+            }
+        }
     }
 
     public void SetTimeEverywhere(TimeSpeed speed)
     {
         foreach (var map in Find.Maps)
-            map.AsyncTime().SetDesiredTimeSpeed(speed);
-        SetDesiredTimeSpeed(speed);
+            map.AsyncTime().DesiredTimeSpeed = speed;
+        DesiredTimeSpeed = speed;
     }
 
     public static float lastSpeedChange;
@@ -269,13 +310,13 @@ public class AsyncWorldTimeComp : IExposable, ITickable
     private void HandleTimeSpeed(ScheduledCommand cmd, ByteReader data)
     {
         TimeSpeed speed = (TimeSpeed)data.ReadByte();
-        SetDesiredTimeSpeed(speed);
+        DesiredTimeSpeed = speed;
 
         if (!Multiplayer.GameComp.asyncTime)
         {
             SetTimeEverywhere(speed);
 
-            if (!cmd.issuedBySelf)
+            if (!cmd.IsIssuedBySelf())
                 lastSpeedChange = Time.realtimeSinceStartup;
         }
 
@@ -297,7 +338,7 @@ public class AsyncWorldTimeComp : IExposable, ITickable
         if (!Multiplayer.GameComp.asyncTime || vote == TimeVote.ResetGlobal)
             SetTimeEverywhere(Multiplayer.GameComp.GetLowestTimeVote(TickableId));
         else if (TickPatch.TickableById(tickableId) is { } tickable)
-            tickable.SetDesiredTimeSpeed(Multiplayer.GameComp.GetLowestTimeVote(tickableId));
+            tickable.DesiredTimeSpeed = Multiplayer.GameComp.GetLowestTimeVote(tickableId);
     }
 
     public void FinalizeInit()

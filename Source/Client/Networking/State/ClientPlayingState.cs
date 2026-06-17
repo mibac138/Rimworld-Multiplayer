@@ -1,186 +1,141 @@
-using Ionic.Zlib;
-using Multiplayer.Common;
-using RimWorld;
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using Ionic.Zlib;
+using Multiplayer.Client.Desyncs;
+using Multiplayer.Client.Saving;
+using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
+using RimWorld;
 using UnityEngine;
 using Verse;
 
 namespace Multiplayer.Client
 {
-    public class ClientPlayingState : ClientBaseState
+    [PacketHandlerClass(inheritHandlers: true)]
+    public class ClientPlayingState(ConnectionBase connection) : ClientBaseState(connection)
     {
-        public ClientPlayingState(ConnectionBase connection) : base(connection)
+        [TypedPacketHandler]
+        public void HandleCommand(ServerCommandPacket packet)
         {
-        }
-
-        [PacketHandler(Packets.Server_TimeControl)]
-        public void HandleTimeControl(ByteReader data)
-        {
-            int tickUntil = data.ReadInt32();
-            int sentCmds = data.ReadInt32();
-            float stpt = data.ReadFloat();
-
-            if (Multiplayer.session.remoteTickUntil >= tickUntil) return;
-
-            TickPatch.serverTimePerTick = stpt;
-            Multiplayer.session.remoteTickUntil = tickUntil;
-            Multiplayer.session.remoteSentCmds = sentCmds;
-            Multiplayer.session.ProcessTimeControl();
-        }
-
-        [PacketHandler(Packets.Server_KeepAlive)]
-        public void HandleKeepAlive(ByteReader data)
-        {
-            int id = data.ReadInt32();
-            int ticksBehind = TickPatch.tickUntil - TickPatch.Timer;
-
-            connection.Send(
-                Packets.Client_KeepAlive,
-                ByteWriter.GetBytes(id, ticksBehind, TickPatch.Simulating, TickPatch.workTicks),
-                false
-            );
-        }
-
-        [PacketHandler(Packets.Server_Command)]
-        public void HandleCommand(ByteReader data)
-        {
-            ScheduledCommand cmd = ScheduledCommand.Deserialize(data);
-            cmd.issuedBySelf = data.ReadBool();
-            Session.ScheduleCommand(cmd);
-
+            Session.ScheduleCommand(packet.ToCommand());
             Multiplayer.session.receivedCmds++;
             Multiplayer.session.ProcessTimeControl();
         }
 
-        [PacketHandler(Packets.Server_PlayerList)]
-        public void HandlePlayerList(ByteReader data)
+        [TypedPacketHandler]
+        public void HandlePlayerList(ServerPlayerListPacket packet)
         {
-            var action = (PlayerListAction)data.ReadByte();
-
-            if (action == PlayerListAction.Add)
+            if (packet.action == PlayerListAction.Add)
             {
-                var info = PlayerInfo.Read(data);
-                if (!Multiplayer.session.players.Contains(info))
-                    Multiplayer.session.players.Add(info);
-            }
-            else if (action == PlayerListAction.Remove)
-            {
-                int id = data.ReadInt32();
-                Multiplayer.session.players.RemoveAll(p => p.id == id);
-            }
-            else if (action == PlayerListAction.List)
-            {
-                int count = data.ReadInt32();
-
-                Multiplayer.session.players.Clear();
-                for (int i = 0; i < count; i++)
-                    Multiplayer.session.players.Add(PlayerInfo.Read(data));
-            }
-            else if (action == PlayerListAction.Latencies)
-            {
-                int count = data.ReadInt32();
-
-                for (int i = 0; i < count; i++)
+                foreach (var info in packet.players)
                 {
-                    var player = Multiplayer.session.players[i];
-                    player.latency = data.ReadInt32();
-                    player.ticksBehind = data.ReadInt32();
-                    player.simulating = data.ReadBool();
-                    player.frameTime = data.ReadFloat();
+                    if (!Multiplayer.session.players.Any(p => p.id == info.id || p.username == info.username))
+                    {
+                        ServerLog.Log($"PlayerList: Adding player {info.id}:{info.username}");
+                        Multiplayer.session.players.Add(PlayerInfo.FromNet(info));
+                    }
+                    else
+                    {
+                        ServerLog.Error($"PlayerList: Adding player {info.id}:{info.username} - player already exists");
+                    }
                 }
             }
-            else if (action == PlayerListAction.Status)
+            else if (packet.action == PlayerListAction.Remove)
             {
-                var id = data.ReadInt32();
-                var status = (PlayerStatus)data.ReadByte();
-                var player = Multiplayer.session.GetPlayerInfo(id);
+                ServerLog.Log($"PlayerList: Removing player with id {packet.playerId}");
+                var matches = Multiplayer.session.players.RemoveAll(p => p.id == packet.playerId);
+                if (matches > 1)
+                {
+                    ServerLog.Error($"PlayerList: Removing player with id {packet.playerId} -- occurred {matches} times. This should not happen");
+                }
+            }
+            else if (packet.action == PlayerListAction.List)
+            {
+                ServerLog.Log($"PlayerList: Received player list with {packet.players.Length} entries");
 
-                if (player != null)
-                    player.status = status;
+                Multiplayer.session.players.Clear();
+                foreach (var info in packet.players)
+                {
+                    ServerLog.Log($"PlayerList: Adding player from list {info.id}:{info.username}");
+                    Multiplayer.session.players.Add(PlayerInfo.FromNet(info));
+                }
+            }
+            else if (packet.action == PlayerListAction.Latencies)
+            {
+                foreach (var latency in packet.latencies)
+                {
+                    var player = Multiplayer.session.GetPlayerInfo(latency.playerId);
+                    if (player == null)
+                    {
+                        ServerLog.Log($"PlayerList: Received latency info for unknown player with id {latency.playerId}");
+                        continue;
+                    }
+                    player.latency = latency.latency;
+                    player.ticksBehind = latency.ticksBehind;
+                    player.simulating = latency.simulating;
+                    player.frameTime = latency.frameTime;
+                }
+            }
+            else if (packet.action == PlayerListAction.Status)
+            {
+                var player = Multiplayer.session.GetPlayerInfo(packet.playerId);
+                if (player == null)
+                {
+                    ServerLog.Log($"PlayerList: Received player status ({packet.status}) for unknown player with id {packet.playerId}");
+                }
+                else
+                {
+                    player.status = packet.status;
+                }
             }
         }
 
-        [PacketHandler(Packets.Server_Chat)]
-        public void HandleChat(ByteReader data)
-        {
-            string msg = data.ReadString();
-            Multiplayer.session.AddMsg(msg);
-        }
+        [TypedPacketHandler]
+        public void HandleChat(ServerChatPacket packet) => Multiplayer.session.AddMsg(packet.msg, rawMessage: packet.rawMessage);
 
-        [PacketHandler(Packets.Server_Cursor)]
-        public void HandleCursor(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleCursor(ServerCursorPacket packet)
         {
-            int playerId = data.ReadInt32();
-            var player = Multiplayer.session.GetPlayerInfo(playerId);
+            var player = Multiplayer.session.GetPlayerInfo(packet.playerId);
             if (player == null) return;
 
-            byte seq = data.ReadByte();
-            if (seq < player.cursorSeq && player.cursorSeq - seq < 128) return;
+            var data = packet.data;
+            if (data.seq < player.cursorSeq && player.cursorSeq - data.seq < 128) return;
 
-            byte map = data.ReadByte();
-            player.map = map;
+            player.map = data.map;
+            if (data.map == byte.MaxValue) return;
 
-            if (map == byte.MaxValue) return;
-
-            byte icon = data.ReadByte();
-            float x = data.ReadShort() / 10f;
-            float z = data.ReadShort() / 10f;
-
-            player.cursorSeq = seq;
+            player.cursorSeq = data.seq;
             player.lastCursor = player.cursor;
             player.lastDelta = Multiplayer.clock.ElapsedMillisDouble() - player.updatedAt;
-            player.cursor = new Vector3(x, 0, z);
+            player.cursor = new Vector3(data.x, 0, data.z);
             player.updatedAt = Multiplayer.clock.ElapsedMillisDouble();
-            player.cursorIcon = icon;
+            player.cursorIcon = data.icon;
 
-            short dragXRaw = data.ReadShort();
-            if (dragXRaw != -1)
-            {
-                float dragX = dragXRaw / 10f;
-                float dragZ = data.ReadShort() / 10f;
-
-                player.dragStart = new Vector3(dragX, 0, dragZ);
-            }
-            else
-            {
-                player.dragStart = PlayerInfo.Invalid;
-            }
+            player.dragStart = data.HasDrag ? new Vector3(data.dragX, 0, data.dragZ) : PlayerInfo.Invalid;
         }
 
-        [PacketHandler(Packets.Server_Selected)]
-        public void HandleSelected(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleSelected(ServerSelectedPacket packet)
         {
-            int playerId = data.ReadInt32();
-            var player = Multiplayer.session.GetPlayerInfo(playerId);
+            var player = Multiplayer.session.GetPlayerInfo(packet.playerId);
             if (player == null) return;
 
-            bool reset = data.ReadBool();
+            var data = packet.data;
+            if (data.reset) player.selectedThings.Clear();
 
-            if (reset)
-                player.selectedThings.Clear();
+            foreach (var id in data.newlySelectedIds)
+                player.selectedThings[id] = Time.realtimeSinceStartup;
 
-            int[] add = data.ReadPrefixedInts();
-            for (int i = 0; i < add.Length; i++)
-                player.selectedThings[add[i]] = Time.realtimeSinceStartup;
-
-            int[] remove = data.ReadPrefixedInts();
-            for (int i = 0; i < remove.Length; i++)
-                player.selectedThings.Remove(remove[i]);
+            foreach (var id in data.unselectedIds)
+                player.selectedThings.Remove(id);
         }
 
-        [PacketHandler(Packets.Server_PingLocation)]
-        public void HandlePing(ByteReader data)
-        {
-            int player = data.ReadInt32();
-            int map = data.ReadInt32();
-            int planetTile = data.ReadInt32();
-            var loc = new Vector3(data.ReadFloat(), data.ReadFloat(), data.ReadFloat());
+        [TypedPacketHandler]
+        public void HandlePing(ServerPingLocPacket packet) => Session.locationPings.ReceivePing(packet);
 
-            Session.locationPings.ReceivePing(player, map, planetTile, loc);
-        }
-
-        [PacketHandler(Packets.Server_MapResponse)]
+        [PacketHandler(Packets.Server_MapResponse, allowFragmented: true)]
         public void HandleMapResponse(ByteReader data)
         {
             int mapId = data.ReadInt32();
@@ -195,75 +150,71 @@ namespace Multiplayer.Client
             byte[] mapData = GZipStream.UncompressBuffer(data.ReadPrefixedBytes());
             Session.dataSnapshot.MapData[mapId] = mapData;
 
-            //ClientJoiningState.ReloadGame(TickPatch.tickUntil, Find.Maps.Select(m => m.uniqueID).Concat(mapId).ToList());
-            // todo Multiplayer.client.Send(Packets.CLIENT_MAP_LOADED);
-        }
-
-        [PacketHandler(Packets.Server_Notification)]
-        public void HandleNotification(ByteReader data)
-        {
-            string key = data.ReadString();
-            string[] args = data.ReadPrefixedStrings();
-
-            Messages.Message(key.Translate(Array.ConvertAll(args, s => (NamedArgument)s)), MessageTypeDefOf.SilentInput, false);
-        }
-
-        [PacketHandler(Packets.Server_SyncInfo)]
-        [IsFragmented]
-        public void HandleDesyncCheck(ByteReader data)
-        {
-            Multiplayer.game?.sync.AddClientOpinionAndCheckDesync(ClientSyncOpinion.Deserialize(data));
-        }
-
-        [PacketHandler(Packets.Server_Freeze)]
-        public void HandleFreze(ByteReader data)
-        {
-            bool frozen = data.ReadBool();
-            int frozenAt = data.ReadInt32();
-
-            TickPatch.serverFrozen = frozen;
-            TickPatch.frozenAt = frozenAt;
-        }
-
-        [PacketHandler(Packets.Server_Traces)]
-        [IsFragmented]
-        public void HandleTraces(ByteReader data)
-        {
-            var type = (TracesPacket)data.ReadInt32();
-
-            if (type == TracesPacket.Request)
+            OnMainThread.Enqueue(() =>
             {
-                var tick = data.ReadInt32();
-                var diffAt = data.ReadInt32();
-                var playerId = data.ReadInt32();
+                var mapsToLoad = Find.Maps.Select(m => m.uniqueID).Append(mapId).Distinct().ToList();
+                Loader.ReloadGame(mapsToLoad, false, Multiplayer.game?.gameComp.asyncTime ?? false);
+            });
+        }
 
-                var info = Multiplayer.game.sync.knownClientOpinions.FirstOrDefault(b => b.startTick == tick);
-                var response = info?.GetFormattedStackTracesForRange(diffAt);
+        [TypedPacketHandler]
+        public void HandleNotification(ServerNotificationPacket packet)
+        {
+            var namedArgs = Array.ConvertAll(packet.args, s => (NamedArgument)s);
+            var msg = packet.key.Translate(namedArgs);
+            Messages.Message(msg, MessageTypeDefOf.SilentInput, false);
+            ServerLog.Log($"Notification: {msg} ({packet.key}, {packet.args.Join(", ")})");
+        }
 
-                connection.Send(Packets.Client_Traces, TracesPacket.Response, playerId, GZipStream.CompressString(response));
+        [TypedPacketHandler]
+        public void HandleDesyncCheck(ServerSyncInfoPacket packet) =>
+            Multiplayer.game?.sync.AddClientOpinionAndCheckDesync(ClientSyncOpinion.FromNet(packet.SyncOpinion));
+
+        [TypedPacketHandler]
+        public void HandleFreeze(ServerFreezePacket packet)
+        {
+            TickPatch.serverFrozen = packet.frozen;
+            TickPatch.frozenAt = packet.gameTimer;
+        }
+
+        [TypedPacketHandler]
+        public void HandleTraces(ServerTracesPacket packet)
+        {
+            if (packet.mode == ServerTracesPacket.Mode.Request)
+            {
+                var info = Multiplayer.game.sync.knownClientOpinions.FirstOrDefault(b => b.startTick == packet.tick);
+                var response = info?.GetFormattedStackTracesForRange(packet.diffAt) ?? "Traces not available";
+
+                connection.Send(new ClientTracesPacket
+                    {
+                        playerId = packet.playerId,
+                        rawTraces = GZipStream.CompressString(response),
+                        rawJittedMethods = GZipStream.CompressString(JittedMethods.GetJittedMethodsString())
+                    });
             }
-            else if (type == TracesPacket.Transfer)
+            else if (packet.mode == ServerTracesPacket.Mode.Transfer)
             {
-                var traces = data.ReadPrefixedBytes();
-                Multiplayer.session.desyncTracesFromHost = GZipStream.UncompressString(traces);
+                var traces = GZipStream.UncompressString(packet.rawTraces);
+                var jittedMethods = GZipStream.UncompressString(packet.rawJittedMethods);
+                var hostInfo = new SaveableDesyncInfo.HostInfo(traces, jittedMethods);
+                Find.WindowStack.WindowOfType<DesyncedWindow>()?.HandleHostDesyncInfo(hostInfo);
             }
         }
 
-        [PacketHandler(Packets.Server_Debug)]
-        public void HandleDebug(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleDebug(ServerDebugPacket _) => Rejoiner.DoRejoin();
+
+        [TypedPacketHandler]
+        public void HandleRequestRejoin(ServerRequestRejoinPacket _) => Rejoiner.DoRejoin();
+
+        [TypedPacketHandler]
+        public void HandleSetFaction(ServerSetFactionPacket packet)
         {
-            Rejoiner.DoRejoin();
-        }
+            var playerId = packet.playerId;
+            var factionId = packet.factionId;
+            Session.GetPlayerInfo(playerId).factionId = factionId;
 
-        [PacketHandler(Packets.Server_SetFaction)]
-        public void HandleSetFaction(ByteReader data)
-        {
-            int player = data.ReadInt32();
-            int factionId = data.ReadInt32();
-
-            Session.GetPlayerInfo(player).factionId = factionId;
-
-            if (Session.playerId == player)
+            if (Session.playerId == playerId)
             {
                 Multiplayer.game.ChangeRealPlayerFaction(factionId);
                 Session.myFactionId = factionId;

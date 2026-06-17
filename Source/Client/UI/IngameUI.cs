@@ -6,19 +6,24 @@ using System.Collections.Generic;
 using UnityEngine;
 using Verse;
 using RimWorld.Planet;
+using Multiplayer.Client.DebugUi;
 
 namespace Multiplayer.Client
 {
     [HarmonyPatch(typeof(MainButtonsRoot), nameof(MainButtonsRoot.MainButtonsOnGUI))]
     public static class IngameUIPatch
     {
-        public static List<Func<float, float>> upperLeftDrawers = new()
-        {
+        public static List<Func<float, float>> upperLeftDrawers =
+        [
+            SyncDebugPanel.DoSyncDebugPanel, // Enhanced expandable debug panel
+        ];
+        public static List<Func<float, float>> upperRightDrawers =
+        [
             DoChatAndTicksBehind,
             IngameDebug.DoDevInfo,
             IngameDebug.DoDebugModeLabel,
             IngameDebug.DoTimeDiffLabel
-        };
+        ];
 
         private const float BtnMargin = 8f;
         private const float BtnHeight = 27f;
@@ -33,9 +38,10 @@ namespace Multiplayer.Client
         {
             Text.Font = GameFont.Small;
 
-            if (MpVersion.IsDebug) {
-                IngameDebug.DoDebugPrintout();
-            }
+            // Legacy debug printout disabled - now handled by SyncDebugPanel
+            // if (MpVersion.IsDebug) {
+            //     IngameDebug.DoDebugPrintout();
+            // }
 
             if (Multiplayer.Client != null && Find.CurrentMap != null && Time.time - lastTicksAt > 0.5f)
             {
@@ -78,7 +84,9 @@ namespace Multiplayer.Client
                 );
             }
 
-            DoUpperLeftButtons();
+            // Add extra space for the left side to avoid overlapping with game notifications.
+            DoWidgetList(BtnMargin + BtnHeight + BtnMargin, upperLeftDrawers);
+            DoWidgetList(BtnMargin, upperRightDrawers);
 
             if (Multiplayer.Client != null
                 && !Multiplayer.IsReplay
@@ -95,14 +103,12 @@ namespace Multiplayer.Client
             return Find.Maps.Count > 0;
         }
 
-        private static void DoUpperLeftButtons()
+        private static void DoWidgetList(float y, List<Func<float, float>> widgets)
         {
             if (Multiplayer.session == null)
                 return;
 
-            float y = BtnMargin;
-
-            foreach (var drawer in upperLeftDrawers)
+            foreach (var drawer in widgets)
                 y += drawer(y);
         }
 
@@ -165,7 +171,7 @@ namespace Multiplayer.Client
                 color = new Color(0.0f, 0.8f, 0.0f);
             }
 
-            if (!WorldRendererUtility.WorldRenderedNow)
+            if (!WorldRendererUtility.WorldSelected)
                 text += $"\n\nCurrent map avg TPS: {tps:0.00}";
         }
 

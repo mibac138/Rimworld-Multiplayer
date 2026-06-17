@@ -1,15 +1,11 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
+using Multiplayer.Common.Networking.Packet;
 
 namespace Multiplayer.Common
 {
-    public class ServerPlayingState : MpConnectionState
+    public class ServerPlayingState(ConnectionBase conn) : MpConnectionState(conn)
     {
-        public ServerPlayingState(ConnectionBase conn) : base(conn)
-        {
-        }
-
         [PacketHandler(Packets.Client_WorldReady)]
         public void HandleWorldReady(ByteReader data)
         {
@@ -23,57 +19,64 @@ namespace Multiplayer.Common
             Player.ResetTimeVotes();
         }
 
-        [PacketHandler(Packets.Client_Desynced)]
-        public void HandleDesynced(ByteReader data)
-        {
-            var tick = data.ReadInt32();
-            var diffAt = data.ReadInt32();
+        [TypedPacketHandler]
+        public void HandleDesynced(ClientDesyncedPacket packet) =>
+            Server.playerManager.OnDesync(Player, packet.tick, packet.diffAt);
 
-            Server.playerManager.OnDesync(Player, tick, diffAt);
+        [TypedPacketHandler]
+        public void HandleTraces(ClientTracesPacket packet)
+        {
+            if (!Player.IsHost) return;
+            Server.GetPlayer(packet.playerId)?.SendPacket(ServerTracesPacket.Transfer(packet.rawTraces, packet.rawJittedMethods));
         }
 
-        [PacketHandler(Packets.Client_Traces)]
-        [IsFragmented]
-        public void HandleTraces(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleClientCommand(ClientCommandPacket packet)
         {
-            var type = (TracesPacket)data.ReadInt32();
+            int? mapToResync = null;
 
-            if (type == TracesPacket.Response && Player.IsHost)
+            if (packet.type == CommandType.PlayerCount)
             {
-                var playerId = data.ReadInt32();
-                var traces = data.ReadPrefixedBytes();
-                Server.GetPlayer(playerId)?.SendPacket(Packets.Server_Traces, new object[] { TracesPacket.Transfer, traces });
-            }
-        }
+                ByteReader reader = new ByteReader(packet.data);
+                var prevMapId = reader.ReadInt32();
+                var newMapId = reader.ReadInt32();
+                if (Player.currentMapId != prevMapId)
+                    ServerLog.Error($"Inconsistent player {Player.Username} map. Last known map: {Player.currentMapId}, " +
+                                    $"however received command with transition: {prevMapId} -> {newMapId}");
+                Player.currentMapId = newMapId;
+                Player.hasReportedCurrentMap = true;
 
-        [PacketHandler(Packets.Client_Command)]
-        public void HandleClientCommand(ByteReader data)
-        {
-            CommandType cmd = (CommandType)data.ReadInt32();
-            int mapId = data.ReadInt32();
-            byte[]? extra = data.ReadPrefixedBytes(65535);
-            if (extra == null) return;
+                if (Server.CanUseStandaloneMapStreaming(newMapId))
+                    mapToResync = newMapId;
+            }
 
             // todo check if map id is valid for the player
 
-            Server.commands.Send(cmd, Player.FactionId, mapId, extra, Player);
+            Server.commands.Send(packet.type, Player.FactionId, packet.mapId, packet.data, Player);
+
+            if (mapToResync is int currentMapId)
+                Server.SendMapResponse(Player, currentMapId);
         }
 
         public const int MaxChatMsgLength = 128;
 
-        [PacketHandler(Packets.Client_Chat)]
-        public void HandleChat(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleChat(ClientChatPacket packet)
         {
-            string msg = data.ReadString();
+            Player.helpOnlyUsableCommands = packet.helpOnlyUsableCommands;
+
+            string msg = packet.msg;
             msg = msg.Trim();
 
-            // todo handle max length
             if (msg.Length == 0) return;
+
+            if (msg.Length > MaxChatMsgLength)
+                msg = msg[..MaxChatMsgLength];
 
             if (msg[0] == '/')
             {
-                var cmd = msg.Substring(1);
-                Server.HandleChatCmd(Player, cmd);
+                var cmd = msg[1..];
+                Server.HandleChatCommand(Player, cmd);
             }
             else
             {
@@ -81,14 +84,14 @@ namespace Multiplayer.Common
             }
         }
 
-        [PacketHandler(Packets.Client_WorldDataUpload)]
-        [IsFragmented]
+        [PacketHandler(Packets.Client_WorldDataUpload, allowFragmented: true)]
         public void HandleWorldDataUpload(ByteReader data)
         {
-            if (Server.ArbiterPlaying ? !Player.IsArbiter : !Player.IsHost) // policy
+            // On standalone, accept from any playing client; otherwise only host/arbiter
+            if (!Server.IsStandaloneServer && (Server.ArbiterPlaying ? !Player.IsArbiter : !Player.IsHost))
                 return;
 
-            ServerLog.Log($"Got world upload {data.Left}");
+            ServerLog.Detail($"Got world upload {data.Left}");
 
             Server.worldData.mapData = new Dictionary<int, byte[]>();
 
@@ -106,176 +109,157 @@ namespace Multiplayer.Common
                 Server.worldData.EndJoinPointCreation();
         }
 
-        [PacketHandler(Packets.Client_Cursor)]
-        public void HandleCursor(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleStandaloneWorldSnapshot(ClientStandaloneWorldSnapshotPacket packet)
+        {
+            if (!Server.IsStandaloneServer)
+                return;
+
+            if (!Player.IsPlaying)
+                return;
+
+            var accepted = Server.worldData.TryAcceptStandaloneWorldSnapshot(Player, packet.tick,
+                packet.worldData, packet.sessionData, packet.sha256Hash);
+
+            if (accepted)
+            {
+                ServerLog.Detail(
+                    $"Accepted standalone world snapshot tick={packet.tick} from {Player.Username}");
+            }
+            else
+            {
+                ServerLog.Detail(
+                    $"Rejected standalone world snapshot tick={packet.tick} from {Player.Username}");
+            }
+        }
+
+        [TypedPacketHandler]
+        public void HandleStandaloneMapSnapshot(ClientStandaloneMapSnapshotPacket packet)
+        {
+            if (!Server.IsStandaloneServer)
+                return;
+
+            if (!Player.IsPlaying)
+                return;
+
+            var accepted = Server.worldData.TryAcceptStandaloneMapSnapshot(Player, packet.mapId, packet.tick,
+                packet.mapData, packet.sha256Hash);
+
+            if (accepted)
+            {
+                ServerLog.Detail(
+                    $"Accepted standalone map snapshot map={packet.mapId} tick={packet.tick} from {Player.Username}");
+            }
+            else
+            {
+                ServerLog.Detail(
+                    $"Rejected standalone map snapshot map={packet.mapId} tick={packet.tick} from {Player.Username}");
+            }
+        }
+
+        [TypedPacketHandler]
+        public void HandleCursor(ClientCursorPacket clientPacket)
         {
             if (Player.lastCursorTick == Server.NetTimer) return; // policy
-
-            var writer = new ByteWriter();
-
-            byte seq = data.ReadByte();
-            byte map = data.ReadByte();
-
-            writer.WriteInt32(Player.id);
-            writer.WriteByte(seq);
-            writer.WriteByte(map);
-
-            if (map < byte.MaxValue)
-            {
-                byte icon = data.ReadByte();
-                short x = data.ReadShort();
-                short z = data.ReadShort();
-
-                writer.WriteByte(icon);
-                writer.WriteShort(x);
-                writer.WriteShort(z);
-
-                short dragX = data.ReadShort();
-                writer.WriteShort(dragX);
-
-                if (dragX != -1)
-                {
-                    short dragZ = data.ReadShort();
-                    writer.WriteShort(dragZ);
-                }
-            }
-
             Player.lastCursorTick = Server.NetTimer;
 
-            Server.SendToPlaying(Packets.Server_Cursor, writer.ToArray(), reliable: false, excluding: Player);
+            var serverPacket = new ServerCursorPacket(Player.id, clientPacket);
+            Server.SendToIngame(serverPacket, reliable: false, excluding: Player);
         }
 
-        [PacketHandler(Packets.Client_Selected)]
-        public void HandleSelected(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleSelected(ClientSelectedPacket packet) =>
+            Server.SendToPlaying(new ServerSelectedPacket(Player.id, packet), excluding: Player);
+
+        [TypedPacketHandler]
+        public void HandlePing(ClientPingLocPacket packet) =>
+            Server.SendToPlaying(new ServerPingLocPacket(Player.id, packet));
+
+        [TypedPacketHandler]
+        public void HandleClientKeepAlive(ClientKeepAlivePacket packet)
         {
-            bool reset = data.ReadBool();
-
-            var writer = new ByteWriter();
-
-            writer.WriteInt32(Player.id);
-            writer.WriteBool(reset);
-            writer.WritePrefixedInts(data.ReadPrefixedInts(200));
-            writer.WritePrefixedInts(data.ReadPrefixedInts(200));
-
-            Server.SendToPlaying(Packets.Server_Selected, writer.ToArray(), excluding: Player);
-        }
-
-        [PacketHandler(Packets.Client_PingLocation)]
-        public void HandlePing(ByteReader data)
-        {
-            var writer = new ByteWriter();
-
-            writer.WriteInt32(Player.id);
-
-            writer.WriteInt32(data.ReadInt32()); // Map id
-            writer.WriteInt32(data.ReadInt32()); // Planet tile
-            writer.WriteFloat(data.ReadFloat()); // X
-            writer.WriteFloat(data.ReadFloat()); // Y
-            writer.WriteFloat(data.ReadFloat()); // Z
-
-            Server.SendToPlaying(Packets.Server_PingLocation, writer.ToArray());
-        }
-
-        [PacketHandler(Packets.Client_KeepAlive)]
-        public void HandleClientKeepAlive(ByteReader data)
-        {
-            int id = data.ReadInt32();
-            int ticksBehind = data.ReadInt32();
-            var simulating = data.ReadBool();
-            var workTicks = data.ReadInt32();
-
-            Player.ticksBehind = ticksBehind;
+            Player.ticksBehind = packet.ticksBehind;
             Player.ticksBehindReceivedAt = Server.gameTimer;
-            Player.simulating = simulating;
+            Player.simulating = packet.simulating;
             Player.keepAliveAt = Server.NetTimer;
 
             if (Player.IsHost)
-                Server.workTicks = workTicks;
+                Server.workTicks = packet.workTicks;
 
-            // Latency already handled by LiteNetLib
-            if (connection is LiteNetConnection) return;
-
-            if (Player.keepAliveId == id)
-            {
-                connection.Latency = (connection.Latency * 4 + (int)Player.keepAliveTimer.ElapsedMilliseconds / 2) / 5;
-
-                Player.keepAliveId++;
-                Player.keepAliveTimer.Reset();
-            }
+            var idMatched = Player.keepAliveId == packet.id;
+            connection.OnKeepAliveArrived(idMatched);
+            if (idMatched) Player.keepAliveId++;
         }
 
-        [PacketHandler(Packets.Client_SyncInfo)]
-        [IsFragmented]
-        public void HandleDesyncCheck(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleDesyncCheck(ClientSyncInfoPacket packet)
         {
             var arbiter = Server.ArbiterPlaying;
             if (arbiter ? !Player.IsArbiter : !Player.IsHost) return; // policy
 
-            var raw = data.ReadRaw(data.Left);
-
             // Keep at most 10 sync infos
-            Server.worldData.syncInfos.Add(raw);
+            Server.worldData.syncInfos.Add(packet.rawSyncOpinion);
             if (Server.worldData.syncInfos.Count > 10)
                 Server.worldData.syncInfos.RemoveAt(0);
 
             foreach (var p in Server.PlayingPlayers.Where(p => !p.IsArbiter && (arbiter || !p.IsHost)))
-                p.conn.SendFragmented(Packets.Server_SyncInfo, raw);
+                p.conn.SendFragmented(new ServerSyncInfoPacket { rawSyncOpinion = packet.rawSyncOpinion }.Serialize());
         }
 
-        [PacketHandler(Packets.Client_Freeze)]
-        public void HandleFreeze(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleFreeze(ClientFreezePacket packet)
         {
-            bool freeze = data.ReadBool();
-            Player.frozen = freeze;
+            Player.frozen = packet.freeze;
 
-            if (!freeze)
+            if (!packet.freeze)
                 Player.unfrozenAt = Server.NetTimer;
         }
 
-        [PacketHandler(Packets.Client_Autosaving)]
-        public void HandleAutosaving(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleAutosaving(ClientAutosavingPacket packet)
         {
-            // Host policy
-            if (Player.IsHost && Server.settings.autoJoinPoint.HasFlag(AutoJoinPointFlags.Autosave))
-                Server.worldData.TryStartJoinPointCreation();
+            var forceJoinPoint = packet.reason == JoinPointRequestReason.Save;
+
+            ServerLog.Detail(
+                $"Received Client_Autosaving from {Player.Username}, standalone={Server.IsStandaloneServer}, " +
+                $"isHost={Player.IsHost}, reason={packet.reason}, force={forceJoinPoint}");
+
+            // On standalone, any playing client can trigger a join point (always, regardless of settings)
+            // On hosted, only the host can trigger and only if the Autosave flag is set
+            if (Server.IsStandaloneServer ||
+                (Player.IsHost && Server.settings.autoJoinPoint.HasFlag(AutoJoinPointFlags.Autosave)))
+                Server.worldData.TryStartJoinPointCreation(forceJoinPoint, sourcePlayer: Player);
         }
 
-        [PacketHandler(Packets.Client_Debug)]
-        public void HandleDebug(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleDebug(ClientDebugPacket _)
         {
-            // todo restrict handling
+            if (!Server.commands.CanUseDevMode(Player))
+                return;
 
             Server.worldData.mapCmds.Clear();
             Server.gameTimer = Server.startingTimer;
 
-            Server.SendToPlaying(Packets.Server_Debug, Array.Empty<object>());
+            Server.SendToPlaying(new ServerDebugPacket());
         }
 
-        [PacketHandler(Packets.Client_SetFaction)]
-        public void HandleSetFaction(ByteReader data)
+        [TypedPacketHandler]
+        public void HandleSetFaction(ClientSetFactionPacket packet)
         {
             // todo restrict handling
 
-            int playerId = data.ReadInt32();
-            int factionId = data.ReadInt32();
+            int playerId = packet.playerId;
+            int factionId = packet.factionId;
 
             var player = Server.GetPlayer(playerId);
             if (player == null) return;
             if (player.FactionId == factionId) return;
 
             player.FactionId = factionId;
-            Server.SendToPlaying(Packets.Server_SetFaction, new object[] { playerId, factionId });
+            Server.SendToPlaying(new ServerSetFactionPacket(playerId, factionId));
         }
 
-        [PacketHandler(Packets.Client_FrameTime)]
-        public void HandleFrameTime(ByteReader data)
-        {
-            Player.frameTime = data.ReadFloat();
-        }
-    }
-
-    public enum TracesPacket
-    {
-        Request, Response, Transfer
+        [TypedPacketHandler]
+        public void HandleFrameTime(ClientFrameTimePacket packet) => Player.frameTime = packet.frameTime;
     }
 }

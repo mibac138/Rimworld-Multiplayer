@@ -1,6 +1,8 @@
+using System;
 using HarmonyLib;
 using Multiplayer.Client.Desyncs;
 using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
 using RimWorld;
 using Verse;
 
@@ -40,11 +42,45 @@ namespace Multiplayer.Client
             }
         }
 
-        private const float TicksPerMinute = 60 * 60;
-        private const float TicksPerIngameDay = 2500 * 24;
+        private const float TicksPerMinute = GenTicks.TicksPerRealSecond * 60;
+        private const float TicksPerIngameDay = GenDate.TicksPerDay;
 
         private static void TickAutosave()
         {
+            // When connected to a remote standalone server, the client drives
+            // the autosave timer using the interval received at connection time
+            // (from the server's TOML settings via ServerProtocolOkPacket).
+            if (Multiplayer.session?.ConnectedToStandaloneServer == true)
+            {
+                var session = Multiplayer.session;
+                if (session.autosaveInterval <= 0)
+                    return;
+
+                if (session.autosaveUnit == AutosaveUnit.Minutes)
+                {
+                    session.autosaveCounter++;
+
+                    if (session.autosaveCounter > session.autosaveInterval * TicksPerMinute)
+                    {
+                        session.autosaveCounter = 0;
+                        Autosaving.DoAutosave();
+                    }
+                }
+                else if (session.autosaveUnit == AutosaveUnit.Days)
+                {
+                    var anyMapCounterUp =
+                        Multiplayer.game.mapComps
+                        .Any(m => m.autosaveCounter > session.autosaveInterval * TicksPerIngameDay);
+
+                    if (anyMapCounterUp)
+                    {
+                        Multiplayer.game.mapComps.Do(m => m.autosaveCounter = 0);
+                        Autosaving.DoAutosave();
+                    }
+                }
+                return;
+            }
+
             if (Multiplayer.LocalServer is not { } server) return;
 
             if (server.settings.autosaveUnit == AutosaveUnit.Minutes)
@@ -58,7 +94,8 @@ namespace Multiplayer.Client
                     session.autosaveCounter = 0;
                     Autosaving.DoAutosave();
                 }
-            } else if (server.settings.autosaveUnit == AutosaveUnit.Days && server.settings.autosaveInterval > 0)
+            }
+            else if (server.settings.autosaveUnit == AutosaveUnit.Days && server.settings.autosaveInterval > 0)
             {
                 var anyMapCounterUp =
                     Multiplayer.game.mapComps
@@ -74,16 +111,24 @@ namespace Multiplayer.Client
 
         private static void TickSyncCoordinator()
         {
-            var sync = Multiplayer.game.sync;
-            if (sync.ShouldCollect && TickPatch.Timer % 30 == 0 && sync.currentOpinion != null)
+            if (TickPatch.Timer % 30 == 0)
             {
-                sync.currentOpinion.roundMode = RoundMode.GetCurrentRoundMode();
+                var sync = Multiplayer.game.sync;
+                var opinion = sync.FinishLocalOpinion();
+                if (opinion == null) return;
 
-                if (!TickPatch.Simulating && (Multiplayer.LocalServer != null || Multiplayer.arbiterInstance))
-                    Multiplayer.Client.SendFragmented(Packets.Client_SyncInfo, sync.currentOpinion.Serialize());
+                try
+                {
+                    if (!TickPatch.Simulating && (Multiplayer.LocalServer != null || Multiplayer.arbiterInstance))
+                        Multiplayer.Client.SendFragmented(
+                            new ClientSyncInfoPacket { SyncOpinion = opinion.ToNet() }.Serialize());
+                }
+                catch (Exception e)
+                {
+                    Log.Error($"Failed to send client sync info packet {e}");
+                }
 
-                sync.AddClientOpinionAndCheckDesync(sync.currentOpinion);
-                sync.currentOpinion = null;
+                sync.AddClientOpinionAndCheckDesync(opinion);
             }
         }
 
@@ -92,7 +137,7 @@ namespace Multiplayer.Client
         {
             if (ShipCountdown.timeLeft > 0f)
             {
-                ShipCountdown.timeLeft -= 1 / 60f;
+                ShipCountdown.timeLeft -= 1f / GenTicks.TicksPerRealSecond;
 
                 if (ShipCountdown.timeLeft <= 0f)
                     ShipCountdown.CountdownEnded();

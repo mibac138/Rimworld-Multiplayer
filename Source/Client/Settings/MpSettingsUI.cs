@@ -1,10 +1,11 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Multiplayer.Client.Util;
 using Multiplayer.Common;
 using UnityEngine;
 using Verse;
+using Random = System.Random;
 
 namespace Multiplayer.Client;
 
@@ -12,6 +13,7 @@ public static class MpSettingsUI
 {
     private static string slotsBuffer;
     private static string desyncRadiusBuffer;
+    private static string jittedMethodsBuffer;
 
     private static Vector2 scrollPosition = Vector2.zero;
     private static SettingsPage currentPage = SettingsPage.General;
@@ -63,14 +65,19 @@ public static class MpSettingsUI
             99f);
 
         listing.CheckboxLabeled("MpShowPlayerCursors".Translate(), ref settings.showCursors);
+        DoHideOtherPlayersInColonistBarField(settings, listing);
         listing.CheckboxLabeled("MpPlayerCursorTransparency".Translate(), ref settings.transparentPlayerCursors);
         listing.CheckboxLabeled("MpAutoAcceptSteam".Translate(), ref settings.autoAcceptSteam,
             "MpAutoAcceptSteamDesc".Translate());
         listing.CheckboxLabeled("MpTransparentChat".Translate(), ref settings.transparentChat);
+        listing.CheckboxLabeled("MpHelpOnlyUsableCommands".Translate(), ref settings.helpOnlyUsableCommands,
+            "MpHelpOnlyUsableCommandsDesc".Translate());
         listing.CheckboxLabeled("MpAppendNameToAutosave".Translate(), ref settings.appendNameToAutosave);
         listing.CheckboxLabeled("MpShowModCompat".Translate(), ref settings.showModCompatibility,
             "MpShowModCompatDesc".Translate());
         listing.CheckboxLabeled("MpEnablePingsSetting".Translate(), ref settings.enablePings);
+        listing.CheckboxLabeled("MpEnableCrossPlanetLayerPings".Translate(), ref settings.enableCrossPlanetLayerPings,
+            "MpEnableCrossPlanetLayerPingsDesc".Translate());
         listing.CheckboxLabeled("MpShowMainMenuAnimation".Translate(), ref settings.showMainMenuAnim);
 
         const string buttonOff = "Off";
@@ -86,12 +93,39 @@ public static class MpSettingsUI
                 Find.WindowStack.Add(
                     new FloatMenu(new List<FloatMenuOption>(ButtonChooser(b => settings.jumpToPingButton = b))));
 
+        if (listing.ButtonText("Generate debug info"))
+        {
+            try
+            {
+                DebugInfoFile.Generate();
+            }
+            catch(Exception e)
+            {
+                Log.Error($"Failed to generate debug info {e}");
+            }
+        }
+
+        if (VersionChecker.IsContinuousRelease || VersionChecker.IsLocalBuild)
+            listing.CheckboxLabeled("MpIncludeReplayInDesync".Translate(), ref settings.includeReplayInDesync);
+
         if (Prefs.DevMode)
         {
             listing.CheckboxLabeled("Show debug info", ref settings.showDevInfo);
             listing.TextFieldNumericLabeled("Desync radius:  ", ref settings.desyncTracesRadius, ref desyncRadiusBuffer, 1f,
                 200f);
+            listing.TextFieldNumericLabeled("Jitted methods:  ", ref settings.jittedMethodsInDesync, ref jittedMethodsBuffer);
 
+            if (MpVersion.IsDebug && FileAssoc.IsSupported())
+            {
+                if (FileAssoc.IsRegistered())
+                {
+                    if (listing.ButtonText("Remove file associations")) FileAssoc.Remove();
+                }
+                else
+                {
+                    if (listing.ButtonText("Register file associations")) FileAssoc.Register();
+                }
+            }
 #if DEBUG
             using (MpStyle.Set(TextAnchor.MiddleCenter))
                 if (listing.ButtonTextLabeled("Desync tracing mode", settings.desyncTracingMode.ToString()))
@@ -153,7 +187,7 @@ public static class MpSettingsUI
         rect = new Rect(402, settings.playerColors.Count * 32 + 118, 32, 32);
         if (Widgets.ButtonText(rect, "+"))
         {
-            var rand = new System.Random();
+            var rand = new Random();
             settings.playerColors.Add(new ColorRGBClient((byte)rand.Next(256), (byte)rand.Next(256), (byte)rand.Next(256)));
             PlayerManager.PlayerColors = settings.playerColors.Select(c => (ColorRGB)c).ToArray();
         }
@@ -214,6 +248,20 @@ public static class MpSettingsUI
         // Don't allow changing the username while playing
         if (Multiplayer.Client != null && GUI.GetNameOfFocusedControl() == UsernameField)
             UI.UnfocusCurrentControl();
+    }
+
+    private static void DoHideOtherPlayersInColonistBarField(MpSettings settings, Listing_Standard listing)
+    {
+
+        bool oldValue = settings.hideOtherPlayersInColonistBar;
+        listing.CheckboxLabeled("MpHideOtherPlayersInColonistBar".Translate(), ref settings.hideOtherPlayersInColonistBar);
+        if(oldValue != settings.hideOtherPlayersInColonistBar && Multiplayer.Client != null)
+        {
+            //Force update ColonistBar
+            Find.ColonistBar.MarkColonistsDirty();
+            Find.ColonistBar.CheckRecacheEntries();
+        }
+
     }
 
     private enum SettingsPage

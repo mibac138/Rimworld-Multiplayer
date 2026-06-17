@@ -92,7 +92,7 @@ namespace Multiplayer.Client
         }
     }
 
-    [HarmonyPatch(typeof(LongEventHandler), nameof(LongEventHandler.QueueLongEvent), typeof(Action), typeof(string), typeof(bool), typeof(Action<Exception>), typeof(bool), typeof(Action))]
+    [HarmonyPatch(typeof(LongEventHandler), nameof(LongEventHandler.QueueLongEvent), typeof(Action), typeof(string), typeof(bool), typeof(Action<Exception>), typeof(bool), typeof(bool), typeof(Action))]
     static class SeedLongEvents
     {
         static void Prefix(ref Action action, ref Action callback)
@@ -121,7 +121,7 @@ namespace Multiplayer.Client
         {
             foreach (CodeInstruction inst in insts)
             {
-                if (inst.operand == Rot4GetRandom)
+                if (inst.operand as MethodInfo == Rot4GetRandom)
                 {
                     // Load newThing.thingIdNumber to the stack
                     yield return new CodeInstruction(OpCodes.Ldarg_0);
@@ -137,7 +137,7 @@ namespace Multiplayer.Client
 
                 yield return inst;
 
-                if (inst.operand == Rot4GetRandom)
+                if (inst.operand as MethodInfo == Rot4GetRandom)
                     yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(Rand), nameof(Rand.PopState)));
             }
         }
@@ -203,6 +203,32 @@ namespace Multiplayer.Client
 
         [HarmonyPriority(MpPriority.MpLast)]
         static void Postfix(bool __state)
+        {
+            if (__state)
+                Rand.PopState();
+        }
+    }
+
+    [HarmonyPatch(typeof(PreceptComp_UnwillingToDo_Chance), nameof(PreceptComp_UnwillingToDo_Chance.MemberWillingToDo))]
+    static class SeedPreceptComp_UnwillingToDo_Chance
+    {
+        public static void Prefix(ref bool __state, HistoryEvent ev)
+        {
+            if (Multiplayer.Client == null) return;
+
+            // PreceptComp_UnwillingToDo_Chance.MemberWillingToDo uses RNG, and can be called in interface (or other places that cause issues).
+            // Seed the RNG using the pawn's ID (or the world's constant rand seed as fallback) and the current tick. This will ensure we
+            // get a unique result for each pawn on a given tick, but if called multiple times on the same time it'll have a consistent result.
+            // The fallback is mostly unnecessary, as this precept comp expects a doer. However, we may as well include it as a precaution.
+            // We could add some more parameters to the seed, like using the map's ID or the world's seed, but it's probably an overkill.
+            // This could probably be handled in a smarter way, so if anyone has an idea on how and is willing to do it - go ahead and replace this.
+            var pawnId = ev.args.TryGetArg<Pawn>(HistoryEventArgsNames.Doer, out var pawn) ? pawn.thingIDNumber : Find.World.ConstantRandSeed;
+
+            Rand.PushState(Gen.HashCombineInt(pawnId, Find.TickManager.TicksGame));
+            __state = true;
+        }
+
+        public static void Finalizer(bool __state)
         {
             if (__state)
                 Rand.PopState();

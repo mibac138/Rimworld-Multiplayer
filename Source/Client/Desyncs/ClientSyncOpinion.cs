@@ -3,16 +3,17 @@ using System.Collections.Generic;
 using System.Linq;
 using HarmonyLib;
 using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
 using Verse;
 
 namespace Multiplayer.Client
 {
 
-    public class ClientSyncOpinion
+    public class ClientSyncOpinion(int startTick)
     {
         public bool isLocalClientsOpinion;
 
-        public int startTick;
+        public int startTick = startTick;
         public List<uint> commandRandomStates = new();
         public List<uint> worldRandomStates = new();
         public List<MapRandomStateData> mapStates = new();
@@ -22,15 +23,12 @@ namespace Multiplayer.Client
         public List<int> pawnStatHashes = new();
         public List<int> pawnNeedHashes = new();
 
+        // Serialized only after a desync to reduce bandwidth usage in regular gameplay (only the hashes are used) and
+        // help with debugging in case something goes wrong.
         public List<StackTraceLogItem> desyncStackTraces = new();
         public List<int> desyncStackTraceHashes = new();
         public bool simulating;
         public RoundModeEnum roundMode;
-
-        public ClientSyncOpinion(int startTick)
-        {
-            this.startTick = startTick;
-        }
 
         public string CheckForDesync(ClientSyncOpinion other)
         {
@@ -91,6 +89,29 @@ namespace Multiplayer.Client
             return writer.ToArray();
         }
 
+        public static ClientSyncOpinion FromNet(SyncOpinion sync) => new(sync.startTick)
+        {
+            commandRandomStates = sync.commandRandomStates,
+            worldRandomStates = sync.worldRandomStates,
+            mapStates = sync.mapRandomStates.Select(state => new MapRandomStateData(state.mapId)
+                { randomStates = state.randomStates }).ToList(),
+            desyncStackTraceHashes = sync.traceHashes,
+            simulating = sync.simulating,
+            roundMode = sync.roundMode
+        };
+
+        public SyncOpinion ToNet() => new()
+        {
+            startTick = startTick,
+            commandRandomStates = commandRandomStates,
+            worldRandomStates = worldRandomStates,
+            mapRandomStates = mapStates.Select(state => new MapRandomState
+                { mapId = state.mapId, randomStates = state.randomStates }).ToList(),
+            traceHashes = desyncStackTraceHashes,
+            simulating = simulating,
+            roundMode = roundMode
+        };
+
         public static ClientSyncOpinion Deserialize(ByteReader data)
         {
             var startTick = data.ReadInt32();
@@ -146,7 +167,7 @@ namespace Multiplayer.Client
         public void Clear()
         {
             for (int i = 0; i < desyncStackTraces.Count; i++)
-                desyncStackTraces[i].ReturnToPool();
+                desyncStackTraces[i].Dispose();
         }
     }
 }

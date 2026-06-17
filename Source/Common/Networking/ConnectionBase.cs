@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
+using Multiplayer.Common.Networking.Packet;
 
 namespace Multiplayer.Common
 {
     public abstract class ConnectionBase
     {
+        /// Available ONLY server-side. Always null client-side.
         public string? username;
         public ServerPlayer? serverPlayer;
 
@@ -11,9 +14,19 @@ namespace Multiplayer.Common
 
         public ConnectionStateEnum State { get; private set; }
         public MpConnectionState? StateObj { get; private set; }
+        // If lenient is set, reliable packets without handlers are ignored instead of throwing an exception.
+        // This is set during rejoining and is usually caused by connection state mismatch.
         public bool Lenient { get; set; }
 
-        public T? GetState<T>() where T : MpConnectionState => (T?)StateObj;
+        public void ChangeState(MpConnectionState state)
+        {
+            if (StateObj != null)
+                StateObj.alive = false;
+
+            State = MpConnectionState.GetStateEnumOf(state);
+            StateObj = state;
+            StateObj?.StartState();
+        }
 
         public void ChangeState(ConnectionStateEnum state)
         {
@@ -21,32 +34,29 @@ namespace Multiplayer.Common
                 StateObj.alive = false;
 
             State = state;
-
-            if (State == ConnectionStateEnum.Disconnected)
-                StateObj = null;
-            else
-                StateObj = (MpConnectionState)Activator.CreateInstance(MpConnectionState.stateImpls[(int)state], this);
-
+            StateObj = MpConnectionState.CreateState(state, this);
             StateObj?.StartState();
         }
 
-        public void Send(Packets id)
+        public void Send(Packets id) => Send(id, []);
+
+        public void Send(SerializedPacket packet, bool reliable = true) => Send(packet.id, packet.data, reliable);
+
+        public void Send<T>(T packet, bool reliable = true) where T : struct, IPacket
         {
-            Send(id, Array.Empty<byte>());
+            var writer = new ByteWriter();
+            packet.Bind(new PacketWriter(writer));
+
+            Send(packet.GetId(), writer.ToArray(), reliable);
         }
 
-        public void Send(Packets id, params object[] msg)
-        {
-            Send(id, ByteWriter.GetBytes(msg));
-        }
-
-        public virtual void Send(Packets id, byte[] message, bool reliable = true)
+        protected virtual void Send(Packets id, byte[] message, bool reliable = true)
         {
             if (State == ConnectionStateEnum.Disconnected)
                 return;
 
-            if (message.Length > FragmentSize)
-                throw new PacketSendException($"Packet {id} too big for sending ({message.Length}>{FragmentSize})");
+            if (message.Length > MaxSinglePacketSize)
+                throw new PacketSendException($"Packet {id} too big for sending ({message.Length}>{MaxSinglePacketSize})");
 
             byte[] full = new byte[1 + message.Length];
             full[0] = (byte)(Convert.ToByte(id) & 0x3F);
@@ -56,12 +66,18 @@ namespace Multiplayer.Common
         }
 
         // Steam doesn't like messages bigger than a megabyte
-        public const int FragmentSize = 65_536;
-        public const int MaxPacketSize = 33_554_432;
+        public const int MaxSinglePacketSize = 65_536;
+        // We can send a single packet up to MaxSinglePacketSize but when specifically sending a fragmented packet,
+        // use smaller sizes so that we have more control over them.
+        public const int MaxFragmentPacketSize = 1024;
+        // Max size of a packet that can be sent fragmented. It is not possible to send any packets larger than this.
+        public const int MaxFragmentPacketTotalSize = 33_554_432;
 
         private const int FragNone = 0x0;
         private const int FragMore = 0x40;
-        private const int FragEnd = 0x80;
+        private const int FragEnd  = 0x80;
+
+        private byte sendFragId;
 
         // All fragmented packets need to be sent from the same thread
         public void SendFragmented(Packets id, byte[] message)
@@ -69,34 +85,60 @@ namespace Multiplayer.Common
             if (State == ConnectionStateEnum.Disconnected)
                 return;
 
+            // +1 for Send metadata's overhead
+            if (message.Length + 1 <= MaxFragmentPacketSize)
+            {
+                Send(id, message);
+                return;
+            }
+
+            // every packet has an additional 2 bytes of overhead
+            const int maxFragmentSize = MaxFragmentPacketSize - 2;
+            // the first packet has an additional 6 bytes of overhead
+            var totalLength = message.Length + 6;
+            if (totalLength > MaxFragmentPacketTotalSize)
+            {
+                throw new PacketSendException(
+                    $"Tried to send too big packet {id}. Max size: {MaxFragmentPacketTotalSize}, requested size (incl. overhead): {totalLength}.");
+            }
+
+            // Divide rounding up
+            var fragParts = (totalLength + maxFragmentSize - 1) / maxFragmentSize;
+            var fragId = sendFragId++;
             int read = 0;
+            var writer = new ByteWriter(MaxFragmentPacketSize);
             while (read < message.Length)
             {
-                int len = Math.Min(FragmentSize, message.Length - read);
+                // 1st packet contains 6 bytes of extra metadata.
+                int len = read == 0
+                    ? Math.Min(maxFragmentSize - 6, message.Length - read)
+                    : Math.Min(maxFragmentSize, message.Length - read);
                 int fragState = (read + len >= message.Length) ? FragEnd : FragMore;
                 byte headerByte = (byte)((Convert.ToByte(id) & 0x3F) | fragState);
 
-                var writer = new ByteWriter(1 + 4 + len);
-
                 // Write the packet id and fragment state: MORE or END
                 writer.WriteByte(headerByte);
+                writer.WriteByte(fragId);
 
                 // Send the message length with the first packet
-                if (read == 0) writer.WriteInt32(message.Length);
+                if (read == 0)
+                {
+                    writer.WriteUShort(Convert.ToUInt16(fragParts));
+                    writer.WriteUInt32(Convert.ToUInt32(message.Length));
+                }
 
                 // Copy the message fragment
                 writer.WriteFrom(message, read, len);
 
-                SendRaw(writer.ToArray());
+                // SendRaw copies this data so we can freely clear the writer after it executes.
+                SendRaw(writer.ToArray(), reliable: true);
+                writer.SetLength(0);
 
                 read += len;
             }
         }
 
-        public void SendFragmented(Packets id, params object[] msg)
-        {
-            SendFragmented(id, ByteWriter.GetBytes(msg));
-        }
+        public void SendFragmented(SerializedPacket packet) => SendFragmented(packet.id, packet.data);
 
         protected abstract void SendRaw(byte[] raw, bool reliable = true);
 
@@ -112,69 +154,126 @@ namespace Multiplayer.Common
             byte msgId = (byte)(info & 0x3F);
             byte fragState = (byte)(info & 0xC0);
 
+            int msgLen = data.Left;
             HandleReceiveMsg(msgId, fragState, data, reliable);
+            if (data.Left > 0)
+                ServerLog.Error($"Packet was not fully consumed: {msgId}, msg len: {msgLen}");
         }
 
-        private ByteWriter? fragmented;
-        private int fullSize; // Only for UI
-
-        public int FragmentProgress => (fragmented?.Position * 100 / fullSize) ?? 0;
+        private const int MaxFragmentedPackets = 1;
+        private readonly List<(/* fragId */ byte, FragmentedPacket)> fragments = [];
 
         protected virtual void HandleReceiveMsg(int msgId, int fragState, ByteReader reader, bool reliable)
         {
             if (msgId is < 0 or >= (int)Packets.Count)
-                throw new PacketReadException($"Bad packet id {msgId}");
+                throw new PacketBadIdException(msgId);
 
             Packets packetType = (Packets)msgId;
-            ServerLog.Verbose($"Received packet {this}: {packetType}");
+            if (reader.Left > MaxSinglePacketSize)
+                throw new PacketReadException($"Packet {packetType} too big {reader.Left}>{MaxSinglePacketSize}");
 
-            var handler = StateObj?.GetPacketHandler(packetType) ?? MpConnectionState.packetHandlers[(int)State, (int)packetType];
+            var handler = StateObj?.GetPacketHandler(packetType);
             if (handler == null)
             {
                 if (reliable && !Lenient)
                     throw new PacketReadException($"No handler for packet {packetType} in state {State}");
-
+                ServerLog.Error($"No handler for packet {packetType} in state {State}");
+                reader.Seek(reader.Length);
                 return;
             }
 
-            if (fragState != FragNone && fragmented == null)
-                fullSize = reader.ReadInt32();
+            if (fragState == FragNone) ExecuteMessageHandler(handler, packetType, reader);
+            else HandleReceiveFragment(reader, packetType, handler);
+        }
 
-            if (reader.Left > FragmentSize)
-                throw new PacketReadException($"Packet {packetType} too big {reader.Left}>{FragmentSize}");
+        private void HandleReceiveFragment(ByteReader reader, Packets packetType, PacketHandlerInfo handler)
+        {
+            if (!handler.Fragment) throw new PacketReadException($"Packet {packetType} can't be fragmented");
+            if (reader.Left > MaxFragmentPacketSize)
+                throw new PacketReadException($"Packet fragment {packetType} too big {reader.Left}>{MaxFragmentPacketSize}");
 
-            if (fragState == FragNone)
+            var fragId = reader.ReadByte();
+            var fragIndex = fragments.FindIndex(frag => frag.Item1 == fragId);
+            FragmentedPacket fragPacket;
+            if (fragIndex == -1)
             {
-                handler.Method.Invoke(StateObj, reader);
-            }
-            else if (!handler.Fragment)
-            {
-                throw new PacketReadException($"Packet {packetType} can't be fragmented");
+                if (fragments.Count >= MaxFragmentedPackets)
+                    throw new PacketReadException(
+                        $"High number of fragmented packets at once! {fragments.Count}/{MaxFragmentedPackets}. This will likely cause issues. Dropping the just received fragmented packet (packet type: {packetType}, fragment id: {fragId}).");
+
+                var expectedParts = reader.ReadUShort();
+                var expectedSize = reader.ReadUInt32();
+                if (expectedParts < 2)
+                    ServerLog.Error($"Received fragmented packet with only {expectedParts} expected parts (packet type: {packetType}, fragment id: {fragId}, expected size: {expectedSize}).");
+                if (expectedSize > MaxFragmentPacketTotalSize)
+                    throw new PacketReadException($"Full packet {packetType} too big {expectedSize}>{MaxFragmentPacketTotalSize}");
+
+                fragPacket = FragmentedPacket.Create(packetType, expectedParts, expectedSize);
+                fragIndex = fragments.Count;
+                fragments.Add((fragId, fragPacket));
             }
             else
+                (_, fragPacket) = fragments[fragIndex];
+
+            if (fragPacket.Id != packetType)
+                throw new PacketReadException(
+                    $"Received fragment part with different packet id! {fragPacket.Id} != {packetType}");
+
+            fragPacket.Data.Write(reader.GetBuffer(), reader.Position, reader.Left);
+            fragPacket.ReceivedSize += Convert.ToUInt32(reader.Left);
+            fragPacket.ReceivedPartsCount++;
+            reader.Seek(reader.Length);
+
+            if (fragPacket.ReceivedPartsCount < fragPacket.ExpectedPartsCount)
             {
-                fragmented ??= new ByteWriter(reader.Left);
-                fragmented.WriteRaw(reader.ReadRaw(reader.Left));
+                handler.FragmentHandler?.Invoke(StateObj, fragPacket);
+                return;
+            }
 
-                if (fragmented.Position > MaxPacketSize)
-                    throw new PacketReadException($"Full packet {packetType} too big {fragmented.Position}>{MaxPacketSize}");
+            if (fragPacket.ReceivedSize != fragPacket.ExpectedSize)
+                throw new PacketReadException($"Fragmented packet {packetType} (fragId {fragId}) recombined with different than expected size: {fragPacket.ReceivedSize} != {fragPacket.ExpectedSize}");
 
-                if (fragState == FragEnd)
-                {
-                    handler.Method.Invoke(StateObj, new ByteReader(fragmented.ToArray()));
-                    fragmented = null;
-                }
+            fragments.RemoveAt(fragIndex);
+            ExecuteMessageHandler(handler, packetType, new ByteReader(fragPacket.Data.GetBuffer()));
+        }
+
+        private void ExecuteMessageHandler(PacketHandlerInfo handler, Packets packet, ByteReader data)
+        {
+            var pos = data.Position;
+            try
+            {
+                handler.Method(StateObj, data);
+            }
+            catch (Exception e)
+            {
+                // Don't assume the actual packet's data is at index 0. Packets store extra metadata at the start
+                // of the same ByteReader. We do not care about that metadata here.
+                var packetLen = data.Length - pos;
+                var bytesToShow = Math.Min(128, packetLen);
+                var bytes = data.GetBuffer().SubArray(pos, bytesToShow);
+                var bytesStr = bytes.ToHexString();
+                throw new PacketReadException($"Exception handling packet {packet} in state {State} (first {bytesToShow}/{packetLen} bytes: {bytesStr})", e);
             }
         }
 
-        public abstract void Close(MpDisconnectReason reason, byte[]? data = null);
-
-        public static byte[] GetDisconnectBytes(MpDisconnectReason reason, byte[]? data = null)
+        public void Close(MpDisconnectReason reason, byte[]? data = null)
         {
-            var writer = new ByteWriter();
-            writer.WriteByte((byte)reason);
-            writer.WritePrefixedBytes(data ?? Array.Empty<byte>());
-            return writer.ToArray();
+            // Ideally, we'd send the final packet here and let OnClose handle only the connection teardown.
+            // However, LiteNetLib closes connections immediately, discarding any queued packets.
+            // To ensure reliable delivery before closing, data must be sent via the Disconnect method itself.
+
+            // State.IsServer check only used when disconnecting from a self-hosted local server
+            if (State != ConnectionStateEnum.Disconnected && State.IsServer())
+                OnClose(new ServerDisconnectPacket { reason = reason, data = data ?? [] });
+            else
+                OnClose(null);
+        }
+
+        protected abstract void OnClose(ServerDisconnectPacket? goodbye);
+
+        /// Invoked after a keep alive timer arrives. Only used by the server
+        public virtual void OnKeepAliveArrived(bool idMatched)
+        {
         }
     }
 }

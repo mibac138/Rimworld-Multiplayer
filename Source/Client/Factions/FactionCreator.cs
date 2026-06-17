@@ -5,8 +5,10 @@ using JetBrains.Annotations;
 using Multiplayer.API;
 using Multiplayer.Client.Util;
 using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
 using RimWorld;
 using RimWorld.Planet;
+using UnityEngine;
 using Verse;
 
 namespace Multiplayer.Client.Factions;
@@ -29,19 +31,29 @@ public static class FactionCreator
     }
 
     [SyncMethod]
+    public static void ChangeFactionColor(Faction faction, Color color)
+    {
+        if (faction is not { IsPlayer: true })
+            return;
+
+        faction.color = color;
+    }
+
+    [SyncMethod]
     public static void CreateFaction(int playerId, FactionCreationData creationData)
     {
-        var self = TickPatch.currentExecutingCmdIssuedBySelf;
+        var executingOnlyOnIssuer = TickPatch.currentExecutingCmdIssuedBySelf;
 
         LongEventHandler.QueueLongEvent(() =>
         {
             var scenario = creationData.scenarioDef?.scenario ?? Current.Game.Scenario;
             Map newMap = null;
 
-            PrepareGameInitData(playerId, scenario, self, creationData.startingPossessions);
+            PrepareGameInitData(playerId, scenario, executingOnlyOnIssuer, creationData.startingPossessions);
 
             var newFaction = NewFactionWithIdeo(
                 creationData.factionName,
+                creationData.factionColor,
                 scenario.playerFaction.factionDef,
                 creationData.chooseIdeoInfo
             );
@@ -60,76 +72,56 @@ public static class FactionCreator
                     map.attackTargetsCache.Notify_FactionHostilityChanged(f, newFaction);
 
             using (MpScope.PushFaction(newFaction))
-                InitNewGame();
+                InitNewGame(scenario);
 
-            if (self)
+            if (executingOnlyOnIssuer)
             {
+                ClearPortraitCacheFromPawnConfigPage();
+
                 Current.Game.CurrentMap = newMap;
 
                 Multiplayer.game.ChangeRealPlayerFaction(newFaction);
 
-                CameraJumper.TryJump(MapGenerator.playerStartSpotInt, newMap);
-
-                PostGameStart(scenario);
+                InitLocalVisuals(scenario, newMap);
 
                 // todo setting faction of self
-                Multiplayer.Client.Send(
-                    Packets.Client_SetFaction,
-                    Multiplayer.session.playerId,
-                    newFaction.loadID
-                );
+                Multiplayer.Client.Send(new ClientSetFactionPacket(Multiplayer.session.playerId, newFaction.loadID));
             }
         }, "GeneratingMap", doAsynchronously: true, GameAndMapInitExceptionHandlers.ErrorWhileGeneratingMap);
     }
 
-    private static void PostGameStart(Scenario scenario)
+    private static void ClearPortraitCacheFromPawnConfigPage()
     {
-        /**
-        ScenPart_StartingResearch.cs				
-        ScenPart_AutoActivateMonolith.cs		
-        ScenPart_CreateIncident.cs		
-        ScenPart_GameStartDialog.cs			
-        ScenPart_PlayerFaction.cs		
-        ScenPart_Rule.cs
-
-        Would like to call PostGameStart on all implementations (scenario.PostGameStart) -
-        but dont know if it breaks with dlcs other than biotech - especially while only called
-        on self
-        **/
-
-        HashSet<Type> types = new HashSet<Type>
-        {
-            typeof(ScenPart_PlayerFaction),
-            typeof(ScenPart_GameStartDialog),
-            typeof(ScenPart_StartingResearch),
-        };
-
-        foreach (ScenPart part in scenario.AllParts)
-        {
-            if (types.Contains(part.GetType()))
-            {
-                part.PostGameStart();
-            }
-        }
+        PortraitsCache.Clear();
     }
 
-    private static Map GenerateNewMap(int tile, Scenario scenario, bool setupNextMapFromTickZero)
+    private static void InitLocalVisuals(Scenario scenario, Map generatedMap)
+    {
+        // TODO #587: There may be other logical ScenParts (e.g., ScenPart_StartingResearch) that
+        // need to be executed by all players in the game.
+        var onlyVisualScenParts = new HashSet<Type>() { typeof(ScenPart_GameStartDialog) };
+
+        PostGameStart(scenario, onlyVisualScenParts);
+
+        CameraJumper.TryJump(MapGenerator.playerStartSpotInt, generatedMap);
+    }
+
+    private static Map GenerateNewMap(PlanetTile tile, Scenario scenario, bool setupNextMapFromTickZero)
     {
         // This has to be null, otherwise, during map generation, Faction.OfPlayer returns it which breaks FactionContext
         Find.GameInitData.playerFaction = null;
         Find.GameInitData.PrepForMapGen();
 
-        // ScenPart_PlayerFaction --> PreMapGenerate 
+        // ScenPart_PlayerFaction --> PreMapGenerate
 
-        var settlement = (Settlement)WorldObjectMaker.MakeWorldObject(WorldObjectDefOf.Settlement);
+        Settlement settlement = (Settlement)WorldObjectMaker.MakeWorldObject(WorldObjectDefOf.Settlement);
         settlement.Tile = tile;
         settlement.SetFaction(Faction.OfPlayer);
         Find.WorldObjects.Add(settlement);
 
         // ^^^^ Duplicate Code here ^^^^
-
-        var prevScenario = Find.Scenario;
-        var prevStartingTile = Find.GameInfo.startingTile;
+        Scenario prevScenario = Find.Scenario;
+        PlanetTile prevStartingTile = Find.GameInfo.startingTile;
 
         Current.Game.Scenario = scenario;
         Find.GameInfo.startingTile = tile;
@@ -147,8 +139,6 @@ public static class FactionCreator
                 null
             );
 
-            SetAllThingWithCompsOnMapForbidden(map);
-
             return map;
         }
         finally
@@ -160,27 +150,31 @@ public static class FactionCreator
         }
     }
 
-    // TODO: Remove this Workaround (see Issue #535)
-    private static void SetAllThingWithCompsOnMapForbidden(Map map)
-    {
-        foreach (Thing thing in map.listerThings.AllThings)
-        {
-            if (thing is ThingWithComps)
-            {
-                thing.SetForbidden(true, false);
-            }
-        }
-    }
-
-    private static void InitNewGame()
+    private static void InitNewGame(Scenario scenario)
     {
         PawnUtility.GiveAllStartingPlayerPawnsThought(ThoughtDefOf.NewColonyOptimism);
 
         ResearchUtility.ApplyPlayerStartingResearch();
+
+        // TODO #587: There may be other only visual ScenParts (e.g., ScenPart_GameStartDialog) that only need to
+        // be executed by the local client (the issuer/creator of the new faction).
+        PostGameStart(scenario, new HashSet<Type>() { typeof(ScenPart_StartingResearch) });
+
         // Initialize anomaly. Since the Anomaly comp is currently shared by all players,
         // we need to ensure that any new factions have access to anomaly research if
         // anomaly content was started.
         Find.ResearchManager.Notify_MonolithLevelChanged(Find.Anomaly.Level);
+    }
+
+    private static void PostGameStart(Scenario scenario, IEnumerable<Type> scenPartTypesToInvoke)
+    {
+        foreach (ScenPart part in scenario.AllParts)
+        {
+            if (scenPartTypesToInvoke.Contains(part.GetType()))
+            {
+                part.PostGameStart();
+            }
+        }
     }
 
     private static void PrepareGameInitData(int sessionId, Scenario scenario, bool self, List<ThingDefCount> startingPossessions)
@@ -216,14 +210,15 @@ public static class FactionCreator
         }
     }
 
-    private static Faction NewFactionWithIdeo(string name, FactionDef def, IdeologyData chooseIdeoInfo)
+    private static Faction NewFactionWithIdeo(string name, Color color, FactionDef def, IdeologyData chooseIdeoInfo)
     {
         var faction = new Faction
         {
             loadID = Find.UniqueIDsManager.GetNextFactionID(),
             def = def,
             Name = name,
-            hidden = true
+            color = color,
+            hidden = true,
         };
 
         faction.ideos = new FactionIdeosTracker(faction);
@@ -292,11 +287,11 @@ public static class FactionCreator
 public record FactionCreationData : ISyncSimple
 {
     public string factionName;
-    public int startingTile;
+    public PlanetTile startingTile;
+    public Color factionColor;
     [CanBeNull] public ScenarioDef scenarioDef;
     public IdeologyData chooseIdeoInfo;
     public bool generateMap;
     public List<ThingDefCount> startingPossessions;
     public bool setupNextMapFromTickZero;
 }
-

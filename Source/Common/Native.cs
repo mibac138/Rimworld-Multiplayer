@@ -59,12 +59,13 @@ namespace Multiplayer.Client
 
             // Struct offset found manually
             // Navigate by string: "Handle Stack"
+            // Updated for RimWorld 1.6 (Unity 2022.3.35f1, Mono 6.13.0)
             if (os == NativeOS.Linux)
-                LmfPtr = threadInfoPtr + 0x480 - 8 * 4;
+                LmfPtr = threadInfoPtr + 0x450; // Updated: 1.5 was 0x460, -16 bytes = 0x450 (following Windows pattern)
             else if (os == NativeOS.Windows)
-                LmfPtr = threadInfoPtr + 0x448 - 8 * 4;
+                LmfPtr = threadInfoPtr + 0x418; // Updated for 1.6. Seems to work so far.
             else if (os == NativeOS.OSX)
-                LmfPtr = threadInfoPtr + 0x418 - 8 * 4;
+                LmfPtr = threadInfoPtr + 0x3E8; // Updated: 1.5 was 0x3F8, -16 bytes = 0x3E8 (following Windows pattern)
             else if (os == NativeOS.Dummy)
             {
                 LmfPtr = (long)Marshal.AllocHGlobal(3 * 8);
@@ -73,29 +74,39 @@ namespace Multiplayer.Client
             }
         }
 
-        public static string? MethodNameFromAddr(long addr, bool harmonyOriginals)
+        private static IntPtr MaybeFindHarmonyOriginalMethod(long addr, bool harmonyOriginals)
         {
-            var domain = DomainPtr;
-            var ji = mono_jit_info_table_find(domain, (IntPtr)addr);
+            var ji = mono_jit_info_table_find(DomainPtr, (IntPtr)addr);
+            if (ji == IntPtr.Zero) return IntPtr.Zero;
 
-            if (ji == IntPtr.Zero) return null;
-
-            var ptrToPrint = mono_jit_info_get_method(ji);
+            var ptr = mono_jit_info_get_method(ji);
             var codeStart = (long)mono_jit_info_get_code_start(ji);
 
             if (harmonyOriginals && HarmonyOriginalGetter != null)
             {
                 var original = HarmonyOriginalGetter(codeStart);
                 if (original != null)
-                    ptrToPrint = original.MethodHandle.Value;
+                    ptr = original.MethodHandle.Value;
             }
 
-            var name = mono_debug_print_stack_frame(ptrToPrint, -1, domain);
+            return ptr;
+        }
 
+        public static string? MethodNameFromAddr(long addr, bool harmonyOriginals)
+        {
+            var ptr = MaybeFindHarmonyOriginalMethod(addr, harmonyOriginals);
+            if (ptr == IntPtr.Zero) return null;
+            var name = mono_debug_print_stack_frame(ptr, -1, DomainPtr);
             return string.IsNullOrEmpty(name) ? null : name;
         }
 
-        private static ConstructorInfo runtimeMethodHandleCtor = AccessTools.Constructor(typeof(RuntimeMethodHandle), new[]{typeof(IntPtr)});
+        public static string? MethodNameNormalizedFromAddr(long addr, bool harmonyOriginals)
+        {
+            var ptr = MaybeFindHarmonyOriginalMethod(addr, harmonyOriginals);
+            return ptr == IntPtr.Zero ? null : mono_method_get_reflection_name(ptr);
+        }
+
+        private static ConstructorInfo runtimeMethodHandleCtor = AccessTools.Constructor(typeof(RuntimeMethodHandle), [typeof(IntPtr)]);
 
         public static bool GetMethodAggressiveInlining(long addr)
         {
@@ -105,12 +116,21 @@ namespace Multiplayer.Client
             if (ji == IntPtr.Zero) return false;
 
             var methodHandle = mono_jit_info_get_method(ji);
-            var rmh = (RuntimeMethodHandle)runtimeMethodHandleCtor.Invoke(new[] { (object)methodHandle });
-            var rth = new RuntimeTypeHandle();
-            var methodInfo = MethodBase.GetMethodFromHandle(rmh, rth);
-            if (methodInfo == null) return false;
+            var methodBase = GetMethodBaseFromRuntimePointer(methodHandle);
 
-            return (methodInfo.MethodImplementationFlags & MethodImplAttributes.AggressiveInlining) != 0;
+            if (methodBase == null) return false;
+
+            return (methodBase.MethodImplementationFlags & MethodImplAttributes.AggressiveInlining) != 0;
+        }
+
+        public static MethodBase? GetMethodBaseFromRuntimePointer(IntPtr methodHandle)
+        {
+            if (methodHandle == IntPtr.Zero)
+                return null;
+            var rmh = (RuntimeMethodHandle)runtimeMethodHandleCtor.Invoke([methodHandle]);
+            var rth = new RuntimeTypeHandle();
+            var methodBase = MethodBase.GetMethodFromHandle(rmh, rth);
+            return methodBase;
         }
 
         // const string MonoWindows = "mono-2.0-sgen.dll";
@@ -119,10 +139,10 @@ namespace Multiplayer.Client
         const string MonoOSX = "libmonobdwgc-2.0.dylib";
 
         [DllImport(MonoLinux, EntryPoint = "mono_dllmap_insert")]
-        private static extern void mono_dllmap_insert_linux(IntPtr assembly, string dll, string func, string tdll, string tfunc);
+        private static extern void mono_dllmap_insert_linux(IntPtr assembly, string? dll, string? func, string? tdll, string? tfunc);
 
         [DllImport(MonoOSX, EntryPoint = "mono_dllmap_insert")]
-        private static extern void mono_dllmap_insert_osx(IntPtr assembly, string dll, string func, string tdll, string tfunc);
+        private static extern void mono_dllmap_insert_osx(IntPtr assembly, string? dll, string? func, string? tdll, string? tfunc);
 
         [DllImport(MonoWindows)]
         public static extern IntPtr mono_jit_info_table_find(IntPtr domain, IntPtr addr);
@@ -158,6 +178,9 @@ namespace Multiplayer.Client
         public static extern IntPtr mono_class_vtable(IntPtr domain, IntPtr klass);
 
         [DllImport(MonoWindows)]
+        public static extern int mono_method_get_token(IntPtr method);
+
+        [DllImport(MonoWindows)]
         public static extern string mono_method_get_reflection_name(IntPtr method);
 
         [DllImport(MonoWindows)]
@@ -166,7 +189,15 @@ namespace Multiplayer.Client
         [DllImport(MonoWindows)]
         public static extern IntPtr mono_class_get_image(IntPtr klass);
 
-        public unsafe static bool CctorRan(Type t)
+        [DllImport(MonoWindows)]
+        public static extern IntPtr mono_profiler_create(IntPtr profiler);
+
+        public delegate void JitDoneCallback(IntPtr profiler, IntPtr method, IntPtr jinfo);
+
+        [DllImport(MonoWindows)]
+        public static extern IntPtr mono_profiler_set_jit_done_callback(IntPtr profiler, JitDoneCallback? cb);
+
+        public static unsafe bool CctorRan(Type t)
         {
             return *((byte*)mono_class_vtable(mono_domain_get(), mono_class_from_mono_type(t.TypeHandle.Value)) + 45) != 0;
         }

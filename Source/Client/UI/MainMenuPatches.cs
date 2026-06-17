@@ -1,11 +1,11 @@
-using HarmonyLib;
-using Multiplayer.Common;
-using RimWorld;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
+using HarmonyLib;
 using Multiplayer.Client.Saving;
+using Multiplayer.Client.Util;
+using Multiplayer.Common;
+using RimWorld;
 using UnityEngine;
 using Verse;
 
@@ -38,13 +38,27 @@ namespace Multiplayer.Client
                 int newColony = optList.FindIndex(opt => opt.label == "NewColony".Translate());
                 if (newColony != -1)
                 {
-                    optList.Insert(newColony + 1, new ListableOptionWithMarker("MpMultiplayerButton".Translate(), () =>
-                    {
-                        if (MpVersion.IsDebug && Event.current.button == 1)
-                            ShowModDebugInfo();
-                        else
-                            Find.WindowStack.Add(new ServerBrowser());
-                    }));
+                    var version = $"Multiplayer v{MpVersion.Version}";
+                    var tooltip = $"{version}\n" + "MpMultiplayerButtonTooltip".Translate();
+                    optList.Insert(newColony + 1, new ListableOptionWithMarker("MpMultiplayerButton".Translate(),
+                        tooltip,
+                        () =>
+                        {
+                            if (Event.current.button == 1 && Event.current.shift)
+                            {
+                                Find.WindowStack.Add(new FloatMenu([
+                                    new FloatMenuOption("MpGenerateDebugFile".Translate(),
+                                        () => DebugInfoFile.Generate())
+                                ]));
+                            }
+                            else if (Event.current.button == 0 && Event.current.shift)
+                                GUIUtility.systemCopyBuffer = version;
+                            else
+                            {
+                                Find.WindowStack.Add(new ServerBrowser());
+                                VersionChecker.OpenNewVersionDialogIfApplicable();
+                            }
+                        }));
                 }
             }
 
@@ -111,20 +125,6 @@ namespace Multiplayer.Client
             }
         }
 
-        static void ShowModDebugInfo()
-        {
-            return;
-
-            var info = new RemoteData();
-            JoinData.ReadServerData(JoinData.WriteServerData(true), info);
-            for (int i = 0; i < 200; i++)
-                info.remoteMods.Add(info.remoteMods.Last());
-            info.remoteFiles.Add("rwmt.multiplayer", new ModFile() { relPath = "/Test/Test.xml" });
-            //info.remoteFiles.Add("ludeon.rimworld", new ModFile() { relPath = "/Test/Test.xml" });
-
-            Find.WindowStack.Add(new JoinDataWindow(info));
-        }
-
         public static void AskQuitToMainMenu()
         {
             if (Multiplayer.LocalServer == null)
@@ -173,27 +173,23 @@ namespace Multiplayer.Client
         }
     }
 
-    class ListableOptionWithMarker : ListableOption
+    class ListableOptionWithMarker(string label, string tooltip, Action action, string uiHighlightTag = null)
+        : ListableOption(label, action, uiHighlightTag)
     {
-        public ListableOptionWithMarker(string label, Action action, string uiHighlightTag = null) : base(label, action, uiHighlightTag)
-        {
-        }
-
         public override float DrawOption(Vector2 pos, float width)
         {
-            var r = base.DrawOption(pos, width);
+            var height = base.DrawOption(pos, width);
+            var rect = new Rect(pos.x, pos.y, width, height);
 
+            TooltipHandler.TipRegion(rect, tooltip);
             if (Multiplayer.loadingErrors)
             {
-                float b = Text.CalcHeight(label, width);
-                float num = Mathf.Max(minHeight, b);
-                Rect rect = new Rect(pos.x, pos.y, width, num);
                 var markerRect = new Rect(rect.xMax - 36, rect.center.y - 12, 24, 24);
                 GUI.DrawTexture(markerRect, Widgets.CheckboxOffTex);
                 TooltipHandler.TipRegion(markerRect, MpUtil.TranslateWithDoubleNewLines("MpLoadingError", 5));
             }
 
-            return r;
+            return height;
         }
     }
 

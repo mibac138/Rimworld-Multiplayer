@@ -61,8 +61,7 @@ namespace Multiplayer.Client.Patches
         {
             if (SetupQuickTestPatch.marker)
             {
-                Find.GameInitData.startingTile = 501;
-                Find.WorldGrid[Find.GameInitData.startingTile].hilliness = Hilliness.SmallHills;
+                Find.GameInitData.startingTile = 400;
             }
         }
     }
@@ -91,10 +90,10 @@ namespace Multiplayer.Client.Patches
         {
             foreach (var inst in insts)
             {
-                if (inst.operand == GizmoOnGUI)
+                if (inst.operand as MethodInfo == GizmoOnGUI)
                     yield return new CodeInstruction(OpCodes.Call,
                         AccessTools.Method(typeof(GizmoDrawDebugInfo), nameof(GizmoOnGUIProxy)));
-                else if (inst.operand == GizmoOnGUIShrunk)
+                else if (inst.operand as MethodInfo == GizmoOnGUIShrunk)
                     yield return new CodeInstruction(OpCodes.Call,
                         AccessTools.Method(typeof(GizmoDrawDebugInfo), nameof(GizmoOnGUIShrunkProxy)));
                 else

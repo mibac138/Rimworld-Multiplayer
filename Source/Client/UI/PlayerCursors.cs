@@ -1,6 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
-using Multiplayer.Common;
+using Multiplayer.Common.Networking.Packet;
 using RimWorld.Planet;
 using UnityEngine;
 using Verse;
@@ -33,41 +33,38 @@ public class PlayerCursors
 
     private void SendCursor()
     {
-        var writer = new ByteWriter();
-        writer.WriteByte(cursorSeq++);
+        var packet = new ClientCursorPacket(cursorSeq++);
 
-        if (Find.CurrentMap != null && !WorldRendererUtility.WorldRenderedNow)
+        if (Find.CurrentMap != null && !WorldRendererUtility.WorldSelected)
         {
-            writer.WriteByte((byte)Find.CurrentMap.Index);
+            packet.map = (byte)Find.CurrentMap.Index;
 
             var icon = Find.MapUI?.designatorManager?.SelectedDesignator?.icon;
             int iconId = icon == null ? 0 :
                 !MultiplayerData.icons.Contains(icon) ? 0 : MultiplayerData.icons.IndexOf(icon);
-            writer.WriteByte((byte)iconId);
+            packet.icon = (byte)iconId;
 
-            writer.WriteVectorXZ(UI.MouseMapPosition());
+            var mapPosition = UI.MouseMapPosition();
+            packet.x = mapPosition.x;
+            packet.z = mapPosition.z;
 
             if (Find.Selector.dragBox.IsValidAndActive)
-                writer.WriteVectorXZ(Find.Selector.dragBox.start);
-            else
-                writer.WriteShort(-1);
-        }
-        else
-        {
-            writer.WriteByte(byte.MaxValue);
+            {
+                var dragVec = Find.Selector.dragBox.start;
+                packet.dragX = dragVec.x;
+                packet.dragZ = dragVec.z;
+            }
         }
 
-        Multiplayer.Client.Send(Packets.Client_Cursor, writer.ToArray(), reliable: false);
+        Multiplayer.Client.Send(packet, reliable: false);
     }
 
     private void SendSelected()
     {
         if (Current.ProgramState != ProgramState.Playing) return;
 
-        var writer = new ByteWriter();
-
         int mapId = Find.CurrentMap?.Index ?? -1;
-        if (WorldRendererUtility.WorldRenderedNow) mapId = -1;
+        if (WorldRendererUtility.WorldSelected) mapId = -1;
 
         bool reset = false;
 
@@ -80,17 +77,14 @@ public class PlayerCursors
 
         var selected = new HashSet<int>(Find.Selector.selected.OfType<Thing>().Select(t => t.thingIDNumber));
 
-        var add = new List<int>(selected.Except(lastSelected));
-        var remove = new List<int>(lastSelected.Except(selected));
+        var add = selected.Except(lastSelected).ToArray();
+        var remove = lastSelected.Except(selected).ToArray();
 
-        if (!reset && add.Count == 0 && remove.Count == 0) return;
-
-        writer.WriteBool(reset);
-        writer.WritePrefixedInts(add);
-        writer.WritePrefixedInts(remove);
+        if (!reset && add.Length == 0 && remove.Length == 0) return;
 
         lastSelected = selected;
 
-        Multiplayer.Client.Send(Packets.Client_Selected, writer.ToArray());
+        Multiplayer.Client.Send(new ClientSelectedPacket
+            { reset = reset, newlySelectedIds = add, unselectedIds = remove });
     }
 }
